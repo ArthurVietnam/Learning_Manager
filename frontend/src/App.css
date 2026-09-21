@@ -1,0 +1,28 @@
+.app {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px 20px;
+}
+
+.app h1 {
+  margin: 0 0 8px;
+  color: #1f4e79;
+  font-size: 2rem;
+  overflow-wrap: anywhere;
+}
+
+.app header p {
+  margin: 0;
+  color: #4a4a4a;
+}
+
+.app h2 {
+  margin: 0 0 8px;
+  font-size: 1.25rem;
+}
+
+.app section {
+  margin-top: 32px;
+  padding-top: 20px;
+  border-top: 2px solid #1f4e79;
+}

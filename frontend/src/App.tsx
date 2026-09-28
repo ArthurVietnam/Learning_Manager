@@ -1,19 +1,21 @@
+import { Routes, Route, Navigate } from 'react-router'
+import { AppLayout } from './app/AppLayout'
+import { AssignmentsPage } from './pages/AssignmentsPage'
+import { AssignmentDetailsPage } from './pages/AssignmentDetailsPage'
+import { NewAssignmentPage } from './pages/NewAssignmentPage'
+import { NotFoundPage } from './pages/NotFoundPage'
 import './App.css'
-
-const appTitle: string = 'Учебный менеджер'
 
 export default function App() {
   return (
-    <main className="app">
-      <header>
-        <h1>{appTitle}</h1>
-        <p>Личные учебные задания по вашим курсам: сроки, статус и сложность.</p>
-      </header>
-
-      <section aria-labelledby="items-title">
-        <h2 id="items-title">Мои задания</h2>
-        <p>Здесь появится список ваших заданий.</p>
-      </section>
-    </main>
+    <Routes>
+      <Route element={<AppLayout />}>
+        <Route index element={<Navigate to="/assignments" replace />} />
+        <Route path="assignments" element={<AssignmentsPage />} />
+        <Route path="assignments/new" element={<NewAssignmentPage />} />
+        <Route path="assignments/:id" element={<AssignmentDetailsPage />} />
+        <Route path="*" element={<NotFoundPage />} />
+      </Route>
+    </Routes>
   )
 }

@@ -1,14 +1,15 @@
-import { useParams, Link } from 'react-router'
+import { useParams, Link, useNavigate } from 'react-router'
 import type { Assignment } from '../types/assignment'
-import { ASSIGNMENTS } from '../data/assignments'
 import { STATUS_LABELS, DIFFICULTY_LABELS, isOverdueAssignment } from '../types/assignment'
 
-interface AssignmentDetailsPageProps {
-  assignments?: Assignment[]
+export interface AssignmentDetailsPageProps {
+  assignments: Assignment[]
+  onDelete: (id: string) => void
 }
 
-export function AssignmentDetailsPage({ assignments = ASSIGNMENTS }: AssignmentDetailsPageProps) {
+export function AssignmentDetailsPage({ assignments, onDelete }: AssignmentDetailsPageProps) {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const assignment = assignments.find((item) => item.id === id)
 
   if (!assignment) {
@@ -24,6 +25,16 @@ export function AssignmentDetailsPage({ assignments = ASSIGNMENTS }: AssignmentD
   }
 
   const isOverdue = isOverdueAssignment(assignment)
+
+  function handleDelete() {
+    if (!assignment) {
+      return
+    }
+    if (window.confirm(`Удалить задание «${assignment.title}»?`)) {
+      onDelete(assignment.id)
+      navigate('/assignments', { replace: true })
+    }
+  }
 
   return (
     <article className="page assignment-details">
@@ -79,9 +90,17 @@ export function AssignmentDetailsPage({ assignments = ASSIGNMENTS }: AssignmentD
       </div>
 
       <footer className="details-footer">
-        <Link to="/assignments" className="button button-secondary">
-          К списку заданий
-        </Link>
+        <div className="details-actions">
+          <Link to={`/assignments/${assignment.id}/edit`} className="button button-primary">
+            Редактировать
+          </Link>
+          <button type="button" className="button button-danger" onClick={handleDelete}>
+            Удалить
+          </button>
+          <Link to="/assignments" className="button button-secondary">
+            К списку заданий
+          </Link>
+        </div>
       </footer>
     </article>
   )

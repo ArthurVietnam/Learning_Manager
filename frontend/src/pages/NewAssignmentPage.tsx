@@ -1,6 +1,20 @@
-import { Link } from 'react-router'
+import { useNavigate, Link } from 'react-router'
+import type { AssignmentDraft } from '../types/assignment'
+import { EMPTY_ASSIGNMENT_DRAFT } from '../types/assignment'
+import { AssignmentForm } from '../components/AssignmentForm'
 
-export function NewAssignmentPage() {
+export interface NewAssignmentPageProps {
+  onCreate: (draft: AssignmentDraft) => string
+}
+
+export function NewAssignmentPage({ onCreate }: NewAssignmentPageProps) {
+  const navigate = useNavigate()
+
+  function handleSave(draft: AssignmentDraft) {
+    const id = onCreate(draft)
+    navigate(`/assignments/${id}`)
+  }
+
   return (
     <section className="page new-assignment-page">
       <nav className="breadcrumbs" aria-label="Навигация назад">
@@ -9,22 +23,20 @@ export function NewAssignmentPage() {
         </Link>
       </nav>
 
-      <h1>Создание задания</h1>
+      <header className="page-header">
+        <div>
+          <h2>Создание задания</h2>
+          <p className="page-subtitle">
+            Заполните параметры учебного задания и сохраните в локальный список.
+          </p>
+        </div>
+      </header>
 
-      <div className="stub-notice">
-        <p>Форма появится в следующей лабораторной работе (ЛР 3); сохранение пока не выполняется.</p>
-      </div>
-
-      <div className="form-stub-placeholder">
-        <p className="placeholder-text">
-          В следующей лабораторной работе здесь будет представлена форма добавления учебного задания:
-          название, подробное описание, выбор курса из справочника, указание срока сдачи (дедлайна),
-          начального статуса и уровня сложности.
-        </p>
-        <Link to="/assignments" className="button button-secondary">
-          К списку заданий
-        </Link>
-      </div>
+      <AssignmentForm
+        initialValues={EMPTY_ASSIGNMENT_DRAFT}
+        onSave={handleSave}
+        onCancel={() => navigate('/assignments')}
+      />
     </section>
   )
 }

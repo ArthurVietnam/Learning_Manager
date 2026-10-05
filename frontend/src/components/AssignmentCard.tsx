@@ -2,7 +2,7 @@ import { Link } from 'react-router'
 import type { Assignment } from '../types/assignment'
 import { STATUS_LABELS, DIFFICULTY_LABELS, isOverdueAssignment } from '../types/assignment'
 
-interface AssignmentCardProps {
+export interface AssignmentCardProps {
   assignment: Assignment
 }
 

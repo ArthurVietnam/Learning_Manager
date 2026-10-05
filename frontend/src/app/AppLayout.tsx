@@ -28,6 +28,13 @@ export function AppLayout() {
         </div>
       </header>
 
+      <aside className="memory-notice-banner" role="status">
+        <span className="notice-icon" aria-hidden="true">ℹ️</span>
+        <span>
+          Данные сохраняются временно в оперативной памяти приложения. При перезагрузке страницы (F5) восстановится демонстрационный набор заданий. Постоянное хранение появится вместе с Supabase.
+        </span>
+      </aside>
+
       <main className="app-main">
         <Outlet />
       </main>

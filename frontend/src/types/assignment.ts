@@ -1,4 +1,5 @@
 import type { Course } from './course'
+import { COURSES } from '../data/courses.ts'
 
 export type AssignmentStatus = 'todo' | 'in_progress' | 'done'
 
@@ -13,6 +14,44 @@ export interface Assignment {
   dueDate: string
   status: AssignmentStatus
   difficulty: AssignmentDifficulty
+}
+
+export type AssignmentDraft = Omit<Assignment, 'id'>
+
+export const EMPTY_ASSIGNMENT_DRAFT: AssignmentDraft = {
+  title: '',
+  description: '',
+  courseId: COURSES[0].id,
+  courseTitle: COURSES[0].title,
+  dueDate: '',
+  status: 'todo',
+  difficulty: 'medium',
+}
+
+export function validateAssignmentDraft(draft: AssignmentDraft): string | null {
+  const title = draft.title.trim()
+  if (title.length < 3 || title.length > 100) {
+    return 'Название должно содержать от 3 до 100 символов.'
+  }
+  if (!draft.dueDate) {
+    return 'Укажите срок сдачи задания.'
+  }
+  if (!isValidDueDate(draft.dueDate)) {
+    return 'Укажите корректную дату сдачи в формате ГГГГ-ММ-ДД.'
+  }
+  if (!draft.courseId || !COURSES.some((c) => c.id === draft.courseId)) {
+    return 'Выберите корректный курс из справочника.'
+  }
+  if (!isValidAssignmentStatus(draft.status)) {
+    return 'Укажите корректный статус задания.'
+  }
+  if (!isValidAssignmentDifficulty(draft.difficulty)) {
+    return 'Укажите корректный уровень сложности.'
+  }
+  if (draft.status === 'done' && draft.description.trim().length < 5) {
+    return 'Для выполненного задания обязательно подробное описание результата (не менее 5 символов).'
+  }
+  return null
 }
 
 export const STATUS_LABELS = {
@@ -89,3 +128,4 @@ export function calculateAssignmentStats(
     overdue,
   }
 }
+

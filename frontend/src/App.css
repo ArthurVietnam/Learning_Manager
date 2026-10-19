@@ -752,3 +752,38 @@ button:focus-visible {
   }
 }
 
+/* Course select feedback and states */
+.course-feedback-block {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.course-feedback-block p {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.form-feedback-error {
+  color: #b91c1c;
+  font-weight: 500;
+}
+
+.form-feedback-empty {
+  color: #64748b;
+  font-style: italic;
+}
+
+.form-hint {
+  margin: 4px 0 0;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.form-hint-warning {
+  color: #b45309;
+  font-weight: 500;
+}
+

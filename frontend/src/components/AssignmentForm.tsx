@@ -6,7 +6,7 @@ import {
   isValidAssignmentDifficulty,
   validateAssignmentDraft,
 } from '../types/assignment'
-import { COURSES } from '../data/courses'
+import { useCourses } from '../hooks/useCourses'
 
 export interface AssignmentFormProps {
   initialValues: AssignmentDraft
@@ -17,16 +17,34 @@ export interface AssignmentFormProps {
 export function AssignmentForm(props: AssignmentFormProps) {
   const [draft, setDraft] = useState<AssignmentDraft>(() => ({ ...props.initialValues }))
   const [error, setError] = useState<string>('')
+  const { load, retry } = useCourses()
+
+  const courses = load.status === 'success' ? load.data : []
+  const selectedCourseExists = courses.some((c) => c.id === draft.courseId)
+  const canSave = load.status === 'success' && selectedCourseExists
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+
+    if (!canSave) {
+      setError('Дождитесь справочника и выберите доступный курс.')
+      return
+    }
+
     const trimmedTitle = draft.title.trim()
     const trimmedDescription = draft.description.trim()
-    const validationError = validateAssignmentDraft({
-      ...draft,
-      title: trimmedTitle,
-      description: trimmedDescription,
-    })
+    const selectedCourse = courses.find((c) => c.id === draft.courseId)
+    const courseTitle = selectedCourse ? selectedCourse.name : draft.courseTitle
+
+    const validationError = validateAssignmentDraft(
+      {
+        ...draft,
+        title: trimmedTitle,
+        description: trimmedDescription,
+        courseTitle,
+      },
+      courses,
+    )
 
     if (validationError) {
       setError(validationError)
@@ -38,6 +56,7 @@ export function AssignmentForm(props: AssignmentFormProps) {
       ...draft,
       title: trimmedTitle,
       description: trimmedDescription,
+      courseTitle,
     })
   }
 
@@ -54,7 +73,7 @@ export function AssignmentForm(props: AssignmentFormProps) {
           value={draft.title}
           required
           onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-          placeholder="Например, Лабораторная работа 3"
+          placeholder="Например, Лабораторная работа 4"
         />
       </div>
 
@@ -67,23 +86,72 @@ export function AssignmentForm(props: AssignmentFormProps) {
             id="assignment-course"
             className="form-select"
             value={draft.courseId}
+            required
+            disabled={load.status !== 'success' || courses.length === 0}
             onChange={(e) => {
-              const selectedCourse = COURSES.find((c) => c.id === e.target.value)
-              if (selectedCourse) {
-                setDraft({
-                  ...draft,
-                  courseId: selectedCourse.id,
-                  courseTitle: selectedCourse.title,
-                })
-              }
+              const nextId = e.target.value
+              const selectedCourse = courses.find((c) => c.id === nextId)
+              setDraft({
+                ...draft,
+                courseId: nextId,
+                courseTitle: selectedCourse ? selectedCourse.name : (nextId === '' ? '' : draft.courseTitle),
+              })
             }}
           >
-            {COURSES.map((course) => (
+            <option value="">Выберите курс</option>
+            {draft.courseId !== '' && !selectedCourseExists && (
+              <option value={draft.courseId} disabled>
+                Текущий код: {draft.courseId} — выберите доступный курс
+              </option>
+            )}
+            {courses.map((course) => (
               <option key={course.id} value={course.id}>
-                {course.title} ({course.code})
+                {course.name}
               </option>
             ))}
           </select>
+
+          {load.status === 'loading' && (
+            <p role="status" className="form-hint">
+              Загружаем курсы…
+            </p>
+          )}
+
+          {load.status === 'error' && (
+            <div className="course-feedback-block">
+              <p role="alert" className="form-feedback-error">
+                {load.message}
+              </p>
+              <button
+                type="button"
+                className="button button-secondary button-sm"
+                onClick={retry}
+              >
+                Повторить
+              </button>
+            </div>
+          )}
+
+          {load.status === 'success' && courses.length === 0 && (
+            <div className="course-feedback-block">
+              <p role="status" className="form-feedback-empty">
+                Курсов пока нет. Сохранение недоступно.
+              </p>
+              <button
+                type="button"
+                className="button button-secondary button-sm"
+                onClick={retry}
+              >
+                Повторить
+              </button>
+            </div>
+          )}
+
+          {load.status === 'success' && courses.length > 0 && draft.courseId !== '' && !selectedCourseExists && (
+            <p role="status" className="form-hint form-hint-warning">
+              Курс «{draft.courseId}» не найден в справочнике. Выберите доступный курс.
+            </p>
+          )}
         </div>
 
         <div className="form-group">
@@ -166,7 +234,7 @@ export function AssignmentForm(props: AssignmentFormProps) {
       )}
 
       <div className="form-actions">
-        <button type="submit" className="button button-primary">
+        <button type="submit" className="button button-primary" disabled={!canSave}>
           Сохранить
         </button>
         <button type="button" className="button button-secondary" onClick={props.onCancel}>

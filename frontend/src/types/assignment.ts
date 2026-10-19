@@ -21,14 +21,17 @@ export type AssignmentDraft = Omit<Assignment, 'id'>
 export const EMPTY_ASSIGNMENT_DRAFT: AssignmentDraft = {
   title: '',
   description: '',
-  courseId: COURSES[0].id,
-  courseTitle: COURSES[0].title,
+  courseId: '',
+  courseTitle: '',
   dueDate: '',
   status: 'todo',
   difficulty: 'medium',
 }
 
-export function validateAssignmentDraft(draft: AssignmentDraft): string | null {
+export function validateAssignmentDraft(
+  draft: AssignmentDraft,
+  availableCourses: { id: string }[] = COURSES,
+): string | null {
   const title = draft.title.trim()
   if (title.length < 3 || title.length > 100) {
     return 'Название должно содержать от 3 до 100 символов.'
@@ -39,7 +42,7 @@ export function validateAssignmentDraft(draft: AssignmentDraft): string | null {
   if (!isValidDueDate(draft.dueDate)) {
     return 'Укажите корректную дату сдачи в формате ГГГГ-ММ-ДД.'
   }
-  if (!draft.courseId || !COURSES.some((c) => c.id === draft.courseId)) {
+  if (!draft.courseId || !availableCourses.some((c) => c.id === draft.courseId)) {
     return 'Выберите корректный курс из справочника.'
   }
   if (!isValidAssignmentStatus(draft.status)) {

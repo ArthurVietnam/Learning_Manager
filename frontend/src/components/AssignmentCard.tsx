@@ -12,7 +12,7 @@ export function AssignmentCard({ assignment }: AssignmentCardProps) {
   return (
     <article className="assignment-card">
       <header className="card-header">
-        <span className="card-course">{assignment.courseTitle}</span>
+        <span className="card-course">{assignment.courseTitle || assignment.courseId}</span>
         <div className="card-badges">
           {isOverdue && (
             <span className="badge badge-overdue" title="Срок сдачи истёк">

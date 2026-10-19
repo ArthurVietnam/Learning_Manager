@@ -70,7 +70,7 @@ export function AssignmentDetailsPage({ assignments, onDelete }: AssignmentDetai
         <section className="details-meta-grid">
           <div className="meta-item">
             <span className="meta-label">Курс</span>
-            <span className="meta-value">{assignment.courseTitle}</span>
+            <span className="meta-value">{assignment.courseTitle || assignment.courseId}</span>
           </div>
           <div className="meta-item">
             <span className="meta-label">Дедлайн</span>

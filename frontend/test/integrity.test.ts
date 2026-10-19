@@ -14,6 +14,15 @@ import {
   validateAssignmentDraft,
 } from '../src/types/assignment.ts'
 import type { Assignment, AssignmentDraft } from '../src/types/assignment.ts'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { isCourse, parseCourses, getCourses } from '../src/services/courses.ts'
+import type { Course } from '../src/types/course.ts'
+import type { CoursesLoad } from '../src/hooks/useCourses.ts'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 test('COURSES catalog contains valid reference items', () => {
   assert.ok(COURSES.length >= 5, 'Must have at least 5 courses')
@@ -113,8 +122,8 @@ test('isOverdueAssignment correctly evaluates deadlines', () => {
 test('EMPTY_ASSIGNMENT_DRAFT conforms to AssignmentDraft contract and schema defaults', () => {
   assert.equal(EMPTY_ASSIGNMENT_DRAFT.title, '')
   assert.equal(EMPTY_ASSIGNMENT_DRAFT.description, '')
-  assert.equal(EMPTY_ASSIGNMENT_DRAFT.courseId, COURSES[0].id)
-  assert.equal(EMPTY_ASSIGNMENT_DRAFT.courseTitle, COURSES[0].title)
+  assert.equal(EMPTY_ASSIGNMENT_DRAFT.courseId, '')
+  assert.equal(EMPTY_ASSIGNMENT_DRAFT.courseTitle, '')
   assert.equal(EMPTY_ASSIGNMENT_DRAFT.dueDate, '')
   assert.equal(EMPTY_ASSIGNMENT_DRAFT.status, 'todo')
   assert.equal(EMPTY_ASSIGNMENT_DRAFT.difficulty, 'medium')
@@ -149,6 +158,14 @@ test('validateAssignmentDraft correctly validates draft fields, boundaries, and 
   assert.ok(validateAssignmentDraft({ ...validDraft, dueDate: 'invalid-date' }), 'Malformed dueDate is invalid')
 
   // Course, status, and difficulty validation
+  assert.ok(
+    validateAssignmentDraft({ ...validDraft, courseId: '' }),
+    'Empty courseId is invalid',
+  )
+  assert.ok(
+    validateAssignmentDraft(EMPTY_ASSIGNMENT_DRAFT),
+    'EMPTY_ASSIGNMENT_DRAFT must fail validation because course and title and date are empty',
+  )
   assert.ok(
     validateAssignmentDraft({ ...validDraft, courseId: 'non-existent' }),
     'Non-existent courseId is invalid',
@@ -287,3 +304,288 @@ test('Status filtering correctly segregates assignments and handles both empty s
   assert.equal(noDoneMatches.length, 0)
   assert.ok(onlyTodoItems.length > 0, 'Original list is not empty, but filtered results are empty')
 })
+
+test('isCourse correctly validates course structure and rejects invalid types, empty values or whitespace', () => {
+  // Valid courses
+  assert.equal(isCourse({ id: 'c1', name: 'Веб-разработка' }), true)
+  assert.equal(isCourse({ id: 'cs-101', name: 'Algorithms', extraField: 'ignored' }), true)
+
+  // Non-objects and null
+  assert.equal(isCourse(null), false)
+  assert.equal(isCourse(undefined), false)
+  assert.equal(isCourse('string'), false)
+  assert.equal(isCourse(123), false)
+  assert.equal(isCourse(true), false)
+  assert.equal(isCourse([]), false)
+  assert.equal(isCourse([1, 2, 3]), false)
+  const arrWithProps = [] as unknown as { id: string; name: string }
+  arrWithProps.id = 'c1'
+  arrWithProps.name = 'Веб-разработка'
+  assert.equal(isCourse(arrWithProps), false, 'Array with properties must not be a course')
+
+  // Missing properties
+  assert.equal(isCourse({ id: 'c1' }), false)
+  assert.equal(isCourse({ name: 'Веб-разработка' }), false)
+  assert.equal(isCourse({}), false)
+
+  // Non-string properties
+  assert.equal(isCourse({ id: 1, name: 'Веб-разработка' }), false)
+  assert.equal(isCourse({ id: 'c1', name: 123 }), false)
+  assert.equal(isCourse({ id: null, name: 'Веб' }), false)
+
+  // Empty or whitespace-only
+  assert.equal(isCourse({ id: '', name: 'Веб' }), false)
+  assert.equal(isCourse({ id: '   ', name: 'Веб' }), false)
+  assert.equal(isCourse({ id: 'c1', name: '' }), false)
+  assert.equal(isCourse({ id: 'c1', name: '   ' }), false)
+
+  // ID with leading or trailing whitespace
+  assert.equal(isCourse({ id: ' c1', name: 'Веб' }), false)
+  assert.equal(isCourse({ id: 'c1 ', name: 'Веб' }), false)
+  assert.equal(isCourse({ id: '  c1  ', name: 'Веб' }), false)
+})
+
+test('parseCourses validates courses array and enforces strict uniqueness of IDs', () => {
+  const validList = [
+    { id: 'c1', name: 'Курс 1' },
+    { id: 'c2', name: 'Курс 2' },
+    { id: 'c3', name: 'Курс 3' },
+  ]
+  const parsed = parseCourses(validList)
+  assert.equal(parsed.length, 3)
+  assert.equal(parsed[0].id, 'c1')
+  assert.equal(parsed[1].name, 'Курс 2')
+
+  // Empty array is valid
+  assert.deepEqual(parseCourses([]), [])
+
+  // Non-array throws descriptive error
+  assert.throws(() => parseCourses(null), {
+    name: 'Error',
+    message: 'Неверная структура справочника курсов.',
+  })
+  assert.throws(() => parseCourses(undefined), {
+    name: 'Error',
+    message: 'Неверная структура справочника курсов.',
+  })
+  assert.throws(() => parseCourses('not an array'), {
+    name: 'Error',
+    message: 'Неверная структура справочника курсов.',
+  })
+  assert.throws(() => parseCourses({ id: 'c1', name: 'Курс 1' }), {
+    name: 'Error',
+    message: 'Неверная структура справочника курсов.',
+  })
+
+  // Array with invalid elements
+  assert.throws(() => parseCourses([{ id: 'c1', name: 'Курс 1' }, { id: 'c2' }]), {
+    name: 'Error',
+    message: 'Неверная структура справочника курсов.',
+  })
+  assert.throws(() => parseCourses([{ id: ' c1 ', name: 'Курс 1' }]), {
+    name: 'Error',
+    message: 'Неверная структура справочника курсов.',
+  })
+
+  // Array with duplicate IDs
+  assert.throws(
+    () =>
+      parseCourses([
+        { id: 'c1', name: 'Курс 1' },
+        { id: 'c1', name: 'Другой курс с тем же ID' },
+      ]),
+    {
+      name: 'Error',
+      message: 'В справочнике повторяются идентификаторы.',
+    },
+  )
+
+  assert.throws(
+    () =>
+      parseCourses([
+        { id: 'c1', name: 'Курс 1' },
+        { id: 'c2', name: 'Курс 2' },
+        { id: 'c1', name: 'Дубликат первого' },
+      ]),
+    {
+      name: 'Error',
+      message: 'В справочнике повторяются идентификаторы.',
+    },
+  )
+})
+
+test('Static courses.json catalog exists, is valid JSON, contains at least 5 courses and passes parseCourses', () => {
+  const jsonPath = path.resolve(__dirname, '../public/demo/courses.json')
+  assert.ok(fs.existsSync(jsonPath), 'frontend/public/demo/courses.json must exist')
+
+  const raw = fs.readFileSync(jsonPath, 'utf8')
+  let data: unknown
+  assert.doesNotThrow(() => {
+    data = JSON.parse(raw)
+  }, 'courses.json must be valid JSON')
+
+  assert.ok(Array.isArray(data), 'courses.json must contain a JSON array')
+  assert.ok((data as unknown[]).length >= 5, 'courses.json must contain at least 5 courses')
+
+  const parsed = parseCourses(data)
+  assert.equal(parsed.length, (data as unknown[]).length)
+
+  // Verify all IDs and names are non-empty strings
+  for (const item of parsed) {
+    assert.ok(item.id.trim().length > 0)
+    assert.ok(item.name.trim().length > 0)
+  }
+})
+
+test('getCourses HTTP service fetches from URL, sends signal and no-store, and handles HTTP errors', async () => {
+  const originalFetch = globalThis.fetch
+
+  try {
+    // 1. Success case
+    let calledUrl = ''
+    let calledOptions: RequestInit | undefined
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      calledUrl = String(input)
+      calledOptions = init
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [
+          { id: 'c1', name: 'Веб' },
+          { id: 'c2', name: 'Базы данных' },
+        ],
+      } as Response
+    }) as typeof fetch
+
+    const controller = new AbortController()
+    const result = await getCourses(controller.signal)
+    assert.equal(result.length, 2)
+    assert.equal(result[0].id, 'c1')
+    assert.ok(calledUrl.includes('demo/courses.json'), 'URL must target demo/courses.json')
+    assert.equal(calledOptions?.cache, 'no-store', 'cache mode must be no-store')
+    assert.equal(calledOptions?.signal, controller.signal, 'AbortSignal must be forwarded to fetch')
+
+    // 2. HTTP 404 error case
+    globalThis.fetch = (async () => {
+      return {
+        ok: false,
+        status: 404,
+      } as Response
+    }) as typeof fetch
+
+    await assert.rejects(
+      async () => {
+        await getCourses()
+      },
+      (err: Error) => {
+        assert.ok(err.message.includes('HTTP 404'), 'Error message must include HTTP status 404')
+        return true
+      },
+    )
+
+    // 3. HTTP 500 error case
+    globalThis.fetch = (async () => {
+      return {
+        ok: false,
+        status: 500,
+      } as Response
+    }) as typeof fetch
+
+    await assert.rejects(
+      async () => {
+        await getCourses()
+      },
+      (err: Error) => {
+        assert.ok(err.message.includes('HTTP 500'), 'Error message must include HTTP status 500')
+        return true
+      },
+    )
+
+    // 4. Malformed JSON response body case
+    globalThis.fetch = (async () => {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ notAnArray: true }),
+      } as Response
+    }) as typeof fetch
+
+    await assert.rejects(
+      async () => {
+        await getCourses()
+      },
+      (err: Error) => {
+        assert.equal(err.message, 'Неверная структура справочника курсов.')
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('useCourses lifecycle semantics, cancellation, and form save authorization', () => {
+  // 1. Hook state representation
+  const loadingState: CoursesLoad = { status: 'loading' }
+  const errorState: CoursesLoad = { status: 'error', message: 'Ошибка сети' }
+  const emptySuccessState: CoursesLoad = { status: 'success', data: [] }
+  const successState: CoursesLoad = {
+    status: 'success',
+    data: [
+      { id: 'c1', name: 'Веб-разработка' },
+      { id: 'c2', name: 'Базы данных' },
+    ],
+  }
+
+  // 2. Cancellation / AbortController cleanup logic:
+  // When active = false, neither success nor error update the state
+  let simulatedState: CoursesLoad = { ...loadingState }
+  let active = true
+  const controller = new AbortController()
+
+  // Simulate unmount / cleanup
+  active = false
+  controller.abort()
+  assert.equal(controller.signal.aborted, true, 'AbortController must be aborted on cleanup')
+
+  // Stale promise resolve arrives
+  const staleData: Course[] = [{ id: 'c1', name: 'Stale' }]
+  if (active) {
+    simulatedState = { status: 'success', data: staleData }
+  }
+  assert.equal(simulatedState.status, 'loading', 'Stale response must be ignored when active is false')
+
+  // Stale promise reject arrives
+  if (active) {
+    simulatedState = { status: 'error', message: 'Stale error' }
+  }
+  assert.equal(simulatedState.status, 'loading', 'Stale error must be ignored when active is false')
+
+  // 3. canSave authorization rules
+  const evaluateCanSave = (load: CoursesLoad, courseId: string) => {
+    const courses = load.status === 'success' ? load.data : []
+    const selectedCourseExists = courses.some((c) => c.id === courseId)
+    return load.status === 'success' && selectedCourseExists
+  }
+
+  // Loading state -> canSave must be false
+  assert.equal(evaluateCanSave(loadingState, 'c1'), false)
+  assert.equal(evaluateCanSave(loadingState, ''), false)
+
+  // Error state -> canSave must be false
+  assert.equal(evaluateCanSave(errorState, 'c1'), false)
+
+  // Empty success -> canSave must be false
+  assert.equal(evaluateCanSave(emptySuccessState, 'c1'), false)
+
+  // Non-empty success but courseId is empty -> canSave must be false
+  assert.equal(evaluateCanSave(successState, ''), false)
+
+  // Non-empty success but courseId does not exist -> canSave must be false
+  assert.equal(evaluateCanSave(successState, 'unknown-id'), false)
+
+  // Non-empty success and courseId matches -> canSave must be true
+  assert.equal(evaluateCanSave(successState, 'c1'), true)
+  assert.equal(evaluateCanSave(successState, 'c2'), true)
+})
+

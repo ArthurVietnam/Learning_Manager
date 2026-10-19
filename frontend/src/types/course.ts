@@ -1,6 +1,4 @@
-export interface Course {
+export type Course = {
   id: string
-  title: string
-  code: string
-  description: string
+  name: string
 }

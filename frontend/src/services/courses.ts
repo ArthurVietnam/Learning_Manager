@@ -1,4 +1,5 @@
-import type { Course } from '../types/course'
+import type { Course } from '../types/course.ts'
+import { supabase } from '../lib/supabase.ts'
 
 export function isCourse(value: unknown): value is Course {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
@@ -25,18 +26,44 @@ export function parseCourses(value: unknown): Course[] {
   return courses
 }
 
-const baseUrl =
-  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.BASE_URL) || '/'
-export const COURSES_URL = `${baseUrl}demo/courses.json`
-
-export async function getCourses(signal?: AbortSignal, url: string = COURSES_URL): Promise<Course[]> {
-  const response = await fetch(url, {
-    signal,
-    cache: 'no-store',
-  })
-  if (!response.ok) {
-    throw new Error(`Не удалось загрузить курсы: HTTP ${response.status}`)
+export async function getCourses(signal?: AbortSignal): Promise<Course[]> {
+  if (signal?.aborted) {
+    throw new DOMException('Запрос отменён', 'AbortError')
   }
-  const value: unknown = await response.json()
-  return parseCourses(value)
+
+  let query = supabase
+    .from('courses')
+    .select('id, name')
+    .order('name')
+
+  if (signal) {
+    query = query.abortSignal(signal)
+  }
+
+  let data: unknown
+  let error: { message: string } | null = null
+
+  try {
+    const response = await query
+    data = response.data
+    error = response.error
+  } catch (err) {
+    if (signal?.aborted) {
+      throw new DOMException('Запрос отменён', 'AbortError')
+    }
+    throw new Error(
+      `Не удалось загрузить курсы: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+
+  if (signal?.aborted) {
+    throw new DOMException('Запрос отменён', 'AbortError')
+  }
+
+  if (error) {
+    throw new Error(`Не удалось загрузить курсы: ${error.message}`)
+  }
+
+  return parseCourses(data)
 }
+

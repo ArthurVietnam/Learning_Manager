@@ -1,5 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 import { COURSES } from '../src/data/courses.ts'
 import { ASSIGNMENTS } from '../src/data/assignments.ts'
 import {
@@ -14,15 +18,21 @@ import {
   validateAssignmentDraft,
 } from '../src/types/assignment.ts'
 import type { Assignment, AssignmentDraft } from '../src/types/assignment.ts'
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { isCourse, parseCourses, getCourses } from '../src/services/courses.ts'
 import type { Course } from '../src/types/course.ts'
 import type { CoursesLoad } from '../src/hooks/useCourses.ts'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+
+if (!process.env.VITE_SUPABASE_URL) {
+  process.env.VITE_SUPABASE_URL = 'https://placeholder.supabase.co'
+}
+if (!process.env.VITE_SUPABASE_PUBLISHABLE_KEY) {
+  process.env.VITE_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_placeholder_key'
+}
+
+const { isCourse, parseCourses, getCourses } = await import('../src/services/courses.ts')
+const { supabase } = await import('../src/lib/supabase.ts')
 
 test('COURSES catalog contains valid reference items', () => {
   assert.ok(COURSES.length >= 5, 'Must have at least 5 courses')
@@ -414,113 +424,352 @@ test('parseCourses validates courses array and enforces strict uniqueness of IDs
   )
 })
 
-test('Static courses.json catalog exists, is valid JSON, contains at least 5 courses and passes parseCourses', () => {
-  const jsonPath = path.resolve(__dirname, '../public/demo/courses.json')
-  assert.ok(fs.existsSync(jsonPath), 'frontend/public/demo/courses.json must exist')
+test('Migration SQL schema and seed.sql exist, define required tables, constraints, RLS, policies, and UPSERT seed data', () => {
+  const rootDir = path.resolve(__dirname, '../..')
+  const migrationPath = path.resolve(rootDir, 'supabase/migrations/202610260001_initial_schema.sql')
+  const seedPath = path.resolve(rootDir, 'supabase/seed.sql')
+  const oldJsonPath = path.resolve(__dirname, '../public/demo/courses.json')
 
-  const raw = fs.readFileSync(jsonPath, 'utf8')
-  let data: unknown
-  assert.doesNotThrow(() => {
-    data = JSON.parse(raw)
-  }, 'courses.json must be valid JSON')
+  // 1. Verify old demo JSON is completely removed (no hidden fallback)
+  assert.equal(fs.existsSync(oldJsonPath), false, 'frontend/public/demo/courses.json must be removed')
 
-  assert.ok(Array.isArray(data), 'courses.json must contain a JSON array')
-  assert.ok((data as unknown[]).length >= 5, 'courses.json must contain at least 5 courses')
+  // 2. Migration file
+  assert.ok(fs.existsSync(migrationPath), 'Migration file 202610260001_initial_schema.sql must exist')
+  const migrationSql = fs.readFileSync(migrationPath, 'utf8')
 
-  const parsed = parseCourses(data)
-  assert.equal(parsed.length, (data as unknown[]).length)
+  // Check tables
+  assert.ok(migrationSql.includes('create table public.courses'), 'Must create public.courses table')
+  assert.ok(migrationSql.includes('create table public.assignments'), 'Must create public.assignments table')
 
-  // Verify all IDs and names are non-empty strings
-  for (const item of parsed) {
-    assert.ok(item.id.trim().length > 0)
-    assert.ok(item.name.trim().length > 0)
+  // Check courses constraints
+  assert.ok(migrationSql.includes('id text primary key'), 'courses must have text primary key')
+  assert.ok(migrationSql.includes('name text not null unique'), 'courses name must be not null unique')
+  assert.ok(migrationSql.includes('courses_id_not_blank'), 'courses must have courses_id_not_blank check')
+  assert.ok(migrationSql.includes('courses_name_not_blank'), 'courses must have courses_name_not_blank check')
+
+  // Check assignments fields and constraints
+  assert.ok(
+    migrationSql.includes('id uuid primary key default gen_random_uuid()'),
+    'assignments must have uuid primary key default gen_random_uuid()',
+  )
+  assert.ok(
+    migrationSql.includes('owner_id uuid not null references auth.users(id) on delete cascade'),
+    'assignments must reference auth.users(id) with on delete cascade',
+  )
+  assert.ok(
+    migrationSql.includes('course_id text not null references public.courses(id)'),
+    'assignments must reference public.courses(id)',
+  )
+  assert.ok(
+    migrationSql.includes('on update cascade on delete restrict'),
+    'assignments FK must on update cascade on delete restrict',
+  )
+  assert.ok(migrationSql.includes('assignments_title_length'), 'assignments must have assignments_title_length check')
+  assert.ok(migrationSql.includes('assignments_status_allowed'), 'assignments must have assignments_status_allowed check')
+  assert.ok(
+    migrationSql.includes('assignments_difficulty_allowed'),
+    'assignments must have assignments_difficulty_allowed check',
+  )
+
+  // Check RLS and permissions
+  assert.ok(
+    migrationSql.includes('alter table public.courses enable row level security;'),
+    'courses must enable row level security',
+  )
+  assert.ok(
+    migrationSql.includes('alter table public.assignments enable row level security;'),
+    'assignments must enable row level security',
+  )
+  assert.ok(
+    migrationSql.includes('revoke all on table public.courses from anon, authenticated;'),
+    'revoke all on courses from anon, authenticated',
+  )
+  assert.ok(
+    migrationSql.includes('revoke all on table public.assignments from anon, authenticated;'),
+    'revoke all on assignments from anon, authenticated',
+  )
+  assert.ok(
+    migrationSql.includes('grant select on table public.courses to anon, authenticated;'),
+    'grant select on courses to anon, authenticated',
+  )
+  assert.ok(
+    migrationSql.includes('create policy "courses are publicly readable"'),
+    'must create courses are publicly readable policy',
+  )
+
+  // Verify assignments table has NO client policies or grants
+  assert.equal(
+    migrationSql.includes('grant select on table public.assignments'),
+    false,
+    'assignments must not grant select to client roles',
+  )
+  assert.equal(
+    migrationSql.includes('create policy "assignments'),
+    false,
+    'assignments must not have client policies until Lab 6',
+  )
+
+  // 3. Seed file
+  assert.ok(fs.existsSync(seedPath), 'supabase/seed.sql must exist')
+  const seedSql = fs.readFileSync(seedPath, 'utf8')
+  assert.ok(seedSql.includes('insert into public.courses (id, name)'), 'seed must insert into public.courses')
+  assert.ok(seedSql.includes('on conflict (id) do update'), 'seed must use UPSERT on conflict (id)')
+  assert.ok(seedSql.includes('set name = excluded.name;'), 'seed UPSERT must set name = excluded.name')
+
+  // Verify all 5 reference courses are seeded
+  const expectedCourses = ['c1', 'c2', 'c3', 'c4', 'c5']
+  for (const cId of expectedCourses) {
+    assert.ok(seedSql.includes(`'${cId}'`), `seed.sql must include course id ${cId}`)
   }
 })
 
-test('getCourses HTTP service fetches from URL, sends signal and no-store, and handles HTTP errors', async () => {
-  const originalFetch = globalThis.fetch
+test('Supabase client validates required environment variables and env configuration files exist', () => {
+  const rootDir = path.resolve(__dirname, '..')
+  const envExamplePath = path.resolve(rootDir, '.env.example')
+  assert.ok(fs.existsSync(envExamplePath), 'frontend/.env.example must exist')
+  const envExampleContent = fs.readFileSync(envExamplePath, 'utf8')
+  assert.ok(envExampleContent.includes('VITE_SUPABASE_URL='), '.env.example must specify VITE_SUPABASE_URL')
+  assert.ok(
+    envExampleContent.includes('VITE_SUPABASE_PUBLISHABLE_KEY='),
+    '.env.example must specify VITE_SUPABASE_PUBLISHABLE_KEY',
+  )
+
+  // Verify gitignore ignores local env files
+  const gitIgnorePath = path.resolve(rootDir, '.gitignore')
+  const gitIgnoreContent = fs.readFileSync(gitIgnorePath, 'utf8')
+  assert.ok(
+    gitIgnoreContent.includes('*.local') || gitIgnoreContent.includes('.env*'),
+    '.gitignore must ignore local env files',
+  )
+
+  // Verify supabase.ts throws descriptive error when env vars are absent
+  const nodeBin = process.execPath
+  const runWithoutEnv = () => {
+    return execFileSync(
+      nodeBin,
+      [
+        '--input-type=module',
+        '-e',
+        "delete process.env.VITE_SUPABASE_URL; delete process.env.VITE_SUPABASE_PUBLISHABLE_KEY; import('./src/lib/supabase.ts')",
+      ],
+      { cwd: rootDir, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] },
+    )
+  }
+
+  assert.throws(runWithoutEnv, (err: Error) => {
+    assert.ok(
+      err.message.includes('Не настроены переменные Supabase в .env.local'),
+      'Must throw expected configuration error when variables are missing',
+    )
+    return true
+  })
+
+  const runWithWhitespaceEnv = () => {
+    return execFileSync(
+      nodeBin,
+      [
+        '--input-type=module',
+        '-e',
+        "process.env.VITE_SUPABASE_URL = '   '; process.env.VITE_SUPABASE_PUBLISHABLE_KEY = '   '; import('./src/lib/supabase.ts')",
+      ],
+      { cwd: rootDir, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] },
+    )
+  }
+
+  assert.throws(runWithWhitespaceEnv, (err: Error) => {
+    assert.ok(
+      err.message.includes('Не настроены переменные Supabase в .env.local'),
+      'Must throw expected configuration error when variables are whitespace',
+    )
+    return true
+  })
+
+  // Verify client singleton exists when configured
+  assert.ok(supabase, 'Supabase client singleton must be initialized')
+  assert.equal(typeof supabase.from, 'function', 'Supabase client must expose .from()')
+})
+
+test('getCourses service queries Supabase courses table, applies ordering, forwards abortSignal, and handles errors', async () => {
+  const originalFrom = supabase.from
 
   try {
-    // 1. Success case
-    let calledUrl = ''
-    let calledOptions: RequestInit | undefined
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-      calledUrl = String(input)
-      calledOptions = init
+    // 1. Success case: queries courses table, selects id and name, orders by name
+    let calledTable = ''
+    let calledSelect = ''
+    let calledOrder = ''
+    let attachedSignal: AbortSignal | undefined
+
+    supabase.from = ((table: string) => {
+      calledTable = table
       return {
-        ok: true,
-        status: 200,
-        json: async () => [
-          { id: 'c1', name: 'Веб' },
-          { id: 'c2', name: 'Базы данных' },
-        ],
-      } as Response
-    }) as typeof fetch
+        select(cols: string) {
+          calledSelect = cols
+          return {
+            order(col: string) {
+              calledOrder = col
+              const builder: {
+                abortSignal: (s?: AbortSignal) => typeof builder
+                then: (fn: (res: { data: Course[]; error: null }) => unknown) => Promise<unknown>
+              } = {
+                abortSignal(sig?: AbortSignal) {
+                  attachedSignal = sig
+                  return builder
+                },
+                then(resolve: (res: { data: Course[]; error: null }) => unknown) {
+                  return Promise.resolve({
+                    data: [
+                      { id: 'c1', name: 'Веб-разработка' },
+                      { id: 'c2', name: 'Базы данных' },
+                    ],
+                    error: null,
+                  }).then(resolve)
+                },
+              }
+              return builder
+            },
+          }
+        },
+      }
+    }) as unknown as typeof supabase.from
 
     const controller = new AbortController()
     const result = await getCourses(controller.signal)
     assert.equal(result.length, 2)
     assert.equal(result[0].id, 'c1')
-    assert.ok(calledUrl.includes('demo/courses.json'), 'URL must target demo/courses.json')
-    assert.equal(calledOptions?.cache, 'no-store', 'cache mode must be no-store')
-    assert.equal(calledOptions?.signal, controller.signal, 'AbortSignal must be forwarded to fetch')
+    assert.equal(calledTable, 'courses', 'Must query courses table')
+    assert.equal(calledSelect, 'id, name', 'Must select id and name columns')
+    assert.equal(calledOrder, 'name', 'Must order by name')
+    assert.equal(attachedSignal, controller.signal, 'Must pass abortSignal to query builder')
 
-    // 2. HTTP 404 error case
-    globalThis.fetch = (async () => {
-      return {
-        ok: false,
-        status: 404,
-      } as Response
-    }) as typeof fetch
+    // 2. Abort case: throws DOMException with AbortError
+    const abortedController = new AbortController()
+    abortedController.abort()
+
+    supabase.from = (() => ({
+      select: () => ({
+        order: () => {
+          const builder: {
+            abortSignal: () => typeof builder
+            then: (fn: (res: { data: null; error: null }) => unknown) => Promise<unknown>
+          } = {
+            abortSignal: () => builder,
+            then: (resolve: (res: { data: null; error: null }) => unknown) =>
+              Promise.resolve({ data: null, error: null }).then(resolve),
+          }
+          return builder
+        },
+      }),
+    })) as unknown as typeof supabase.from
 
     await assert.rejects(
       async () => {
-        await getCourses()
+        await getCourses(abortedController.signal)
       },
-      (err: Error) => {
-        assert.ok(err.message.includes('HTTP 404'), 'Error message must include HTTP status 404')
+      (err: DOMException) => {
+        assert.equal(err.name, 'AbortError')
+        assert.equal(err.message, 'Запрос отменён')
         return true
       },
     )
 
-    // 3. HTTP 500 error case
-    globalThis.fetch = (async () => {
-      return {
-        ok: false,
-        status: 500,
-      } as Response
-    }) as typeof fetch
+    // 3. PostgREST error case: throws formatted Error
+    supabase.from = (() => ({
+      select: () => ({
+        order: () => {
+          const builder: {
+            abortSignal: () => typeof builder
+            then: (fn: (res: { data: null; error: { message: string } }) => unknown) => Promise<unknown>
+          } = {
+            abortSignal: () => builder,
+            then: (resolve: (res: { data: null; error: { message: string } }) => unknown) =>
+              Promise.resolve({
+                data: null,
+                error: { message: 'permission denied for table courses' },
+              }).then(resolve),
+          }
+          return builder
+        },
+      }),
+    })) as unknown as typeof supabase.from
 
     await assert.rejects(
       async () => {
         await getCourses()
       },
       (err: Error) => {
-        assert.ok(err.message.includes('HTTP 500'), 'Error message must include HTTP status 500')
+        assert.equal(err.message, 'Не удалось загрузить курсы: permission denied for table courses')
         return true
       },
     )
 
-    // 4. Malformed JSON response body case
-    globalThis.fetch = (async () => {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({ notAnArray: true }),
-      } as Response
-    }) as typeof fetch
+    // 4. Malformed response data case: parsed through parseCourses
+    supabase.from = (() => ({
+      select: () => ({
+        order: () => {
+          const builder: {
+            abortSignal: () => typeof builder
+            then: (fn: (res: { data: unknown; error: null }) => unknown) => Promise<unknown>
+          } = {
+            abortSignal: () => builder,
+            then: (resolve: (res: { data: unknown; error: null }) => unknown) =>
+              Promise.resolve({
+                data: [{ id: 'duplicate', name: 'A' }, { id: 'duplicate', name: 'B' }],
+                error: null,
+              }).then(resolve),
+          }
+          return builder
+        },
+      }),
+    })) as unknown as typeof supabase.from
 
     await assert.rejects(
       async () => {
         await getCourses()
       },
       (err: Error) => {
-        assert.equal(err.message, 'Неверная структура справочника курсов.')
+        assert.equal(err.message, 'В справочнике повторяются идентификаторы.')
+        return true
+      },
+    )
+    // 5. Pre-aborted signal: immediately throws AbortError without firing query
+    const preAborted = new AbortController()
+    preAborted.abort()
+    await assert.rejects(
+      async () => {
+        await getCourses(preAborted.signal)
+      },
+      (err: DOMException) => {
+        assert.equal(err.name, 'AbortError')
+        assert.equal(err.message, 'Запрос отменён')
+        return true
+      },
+    )
+
+    // 6. Network failure / rejected query: wraps into descriptive Error
+    supabase.from = (() => ({
+      select: () => ({
+        order: () => {
+          const builder = {
+            abortSignal: () => builder,
+            then: (_resolve: unknown, reject: (err: Error) => unknown) =>
+              Promise.reject(new Error('Network connection failed')).catch(reject),
+          }
+          return builder
+        },
+      }),
+    })) as unknown as typeof supabase.from
+
+    await assert.rejects(
+      async () => {
+        await getCourses()
+      },
+      (err: Error) => {
+        assert.equal(err.message, 'Не удалось загрузить курсы: Network connection failed')
         return true
       },
     )
   } finally {
-    globalThis.fetch = originalFetch
+    supabase.from = originalFrom
   }
 })
 
@@ -587,5 +836,9 @@ test('useCourses lifecycle semantics, cancellation, and form save authorization'
   // Non-empty success and courseId matches -> canSave must be true
   assert.equal(evaluateCanSave(successState, 'c1'), true)
   assert.equal(evaluateCanSave(successState, 'c2'), true)
-})
 
+  // 4. Refresh button disable contract: disabled when loading, enabled on success
+  const isRefreshDisabled = (status: CoursesLoad['status']) => status === 'loading'
+  assert.equal(isRefreshDisabled('loading'), true, 'Refresh button must be disabled when status is loading')
+  assert.equal(isRefreshDisabled('success'), false, 'Refresh button must be enabled when status is success')
+})

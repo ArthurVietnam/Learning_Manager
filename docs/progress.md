@@ -240,3 +240,184 @@
    - `npm run build` — чистая сборка, файл `public/demo/courses.json` попадает в `dist/demo/courses.json`.
    - `npm run preview` — готовая сборка функционирует без сбоев.
 
+## ЛР 5. Схема данных и справочник в Supabase
+
+В рамках лабораторной работы 5 спроектирована и внедрена реляционная схема базы данных в PostgreSQL через Supabase, справочник курсов перенесён из локального учебного JSON в удалённую базу данных, настроены права доступа PostgreSQL и Row Level Security (RLS), а веб-клиент переключён на официальную библиотеку `@supabase/supabase-js`:
+
+1. **Схема базы данных и ограничения (`supabase/migrations/202610260001_initial_schema.sql`):**
+   - Таблица справочника `public.courses`:
+     - `id text primary key`: уникальный стабильный строковый идентификатор курса (`c1`–`c5`).
+     - `name text not null unique`: читаемое наименование курса.
+     - `constraint courses_id_not_blank check (id = btrim(id) and id <> '')`: запрет пустого идентификатора и пробельных символов по краям.
+     - `constraint courses_name_not_blank check (name = btrim(name) and name <> '')`: запрет пустого или состоящего только из пробелов названия курса.
+   - Основная таблица сущностей `public.assignments`:
+     - `id uuid primary key default gen_random_uuid()`: первичный ключ записи типа UUID.
+     - `owner_id uuid not null references auth.users(id) on delete cascade`: внешний ключ, привязывающий задание к пользователю системы аутентификации Supabase (`auth.users`), с каскадным удалением заданий при удалении пользователя.
+     - `course_id text not null references public.courses(id) on update cascade on delete restrict`: внешний ключ к справочнику курсов с запретом удаления используемого курса (`restrict`) и каскадным обновлением ID.
+     - `title text not null`: название задания.
+     - `description text not null default ''`: подробное описание задания.
+     - `status text not null`: статус выполнения (`todo`, `in_progress`, `done`).
+     - `due_date date not null`: календарный дедлайн.
+     - `difficulty text not null`: уровень сложности (`easy`, `medium`, `hard`).
+     - `created_at timestamptz not null default now()`: временная метка создания записи.
+     - Ограничения CHECK:
+       - `assignments_title_length check (char_length(btrim(title)) between 3 and 100)`
+       - `assignments_status_allowed check (status in ('todo', 'in_progress', 'done'))`
+       - `assignments_difficulty_allowed check (difficulty in ('easy', 'medium', 'hard'))`
+
+2. **Управление доступом, RLS и безопасность:**
+   - RLS включён на обеих таблицах:
+     - `alter table public.courses enable row level security;`
+     - `alter table public.assignments enable row level security;`
+   - Отозваны все права у клиентских ролей `anon` и `authenticated`:
+     - `revoke all on table public.courses from anon, authenticated;`
+     - `revoke all on table public.assignments from anon, authenticated;`
+   - Для публичного справочника курсов выдано строго право чтения и создана политика выборки:
+     - `grant select on table public.courses to anon, authenticated;`
+     - `create policy "courses are publicly readable" on public.courses for select to anon, authenticated using (true);`
+   - Клиентские операции `INSERT`, `UPDATE`, `DELETE` для справочника запрещены (нет соответствующих GRANT и политик).
+   - Таблица `public.assignments` оставлена закрытой от клиентских ролей до ЛР 6: RLS активирован, но политики и GRANT для `anon`/`authenticated` отсутствуют. Браузер не может читать или модифицировать личные записи.
+
+3. **Воспроизводимые начальные данные (`supabase/seed.sql`):**
+   - Идемпотентный скрипт наполнения справочника курсов с использованием UPSERT:
+     ```sql
+     insert into public.courses (id, name)
+     values
+       ('c1', 'Веб-разработка'),
+       ('c2', 'Базы данных'),
+       ('c3', 'Операционные системы'),
+       ('c4', 'Алгоритмы и структуры данных'),
+       ('c5', 'Компьютерные сети')
+     on conflict (id) do update
+     set name = excluded.name;
+     ```
+   - Идентификаторы (`c1`–`c5`) полностью согласованы с данными предыдущих лабораторных, что обеспечивает бесшовную работу существующих демонстрационных записей.
+
+4. **Клиент Supabase и переменные окружения (`frontend/src/lib/supabase.ts`, `.env.example`, `.env.local`):**
+   - Установлена официальная зависимость `@supabase/supabase-js`.
+   - Создан шаблон `frontend/.env.example` с переменными `VITE_SUPABASE_URL` и `VITE_SUPABASE_PUBLISHABLE_KEY`.
+   - Локальный конфигурационный файл `frontend/.env.local` исключён из отслеживания Git через `.gitignore`.
+   - В `src/lib/supabase.ts` инициализирован синглтон-клиент `createClient(url, publishableKey)` с валидацией наличия переменных окружения (при их отсутствии выбрасывается исключение `Error('Не настроены переменные Supabase в .env.local')`).
+
+5. **Сервис получения курсов (`frontend/src/services/courses.ts`):**
+   - Удалён статический HTTP-запрос к JSON и константа `COURSES_URL`.
+   - Удалён файл статического справочника `frontend/public/demo/courses.json` для исключения скрытого fallback.
+   - Реализован асинхронный запрос через Supabase-клиент:
+     ```ts
+     let query = supabase
+       .from('courses')
+       .select('id, name')
+       .order('name')
+
+     if (signal) {
+       query = query.abortSignal(signal)
+     }
+     ```
+   - Поддержана отмена запроса (`throw new DOMException('Запрос отменён', 'AbortError')`), форматирование сообщений ошибок БД (`Не удалось загрузить курсы: ${error.message}`) и runtime-валидация через `parseCourses(data)`.
+
+6. **Обновление формы заданий (`frontend/src/components/AssignmentForm.tsx`):**
+   - Добавлена кнопка «Обновить справочник» (`<button type="button" onClick={retry} disabled={load.status === 'loading'}>`), доступная после успешной загрузки данных.
+   - Кнопка вызывает функцию `retry` хука `useCourses`, что позволяет обновить список курсов из базы данных без перезагрузки вкладки и без потери введённых данных в черновик задания.
+
+7. **Тестирование целостности (`frontend/test/integrity.test.ts`):**
+   - Обновлены и добавлены автотесты (всего 14 тестов):
+     - Проверка миграции `202610260001_initial_schema.sql` (наличие таблиц, PK, FK, ограничений `not_blank`, диапазонов, RLS, политик и закрытости `assignments`).
+     - Проверка `seed.sql` (UPSERT на конфликт по `id`, наличие всех 5 курсов `c1`–`c5`).
+     - Проверка удаления старого JSON `courses.json`.
+     - Проверка конфигурации Supabase-клиента (выброс ошибки при отсутствии переменных, правила `.gitignore`, экспорт синглтона).
+     - Проверка сервиса `getCourses` (вызов `.from('courses')`, `.select('id, name')`, `.order('name')`, проброс `abortSignal`, обработка ошибок PostgREST и проверка структуры).
+
+### Как проверить
+
+1. **Применение миграции и seed в Supabase Dashboard:**
+   - Открыть раздел **SQL Editor** в учебном проекте Supabase.
+   - Вставить и выполнить `supabase/migrations/202610260001_initial_schema.sql`: убедиться, что созданы таблицы `public.courses` и `public.assignments`.
+   - Вставить и выполнить `supabase/seed.sql`: убедиться, что таблица `courses` содержит 5 строк.
+   - В **Table Editor** проверить типы полей, первичные ключи и убедиться, что `assignments` пуста.
+
+2. **Проверка ограничений в SQL Editor:**
+   - Попытка вставки пустого курса:
+     ```sql
+     insert into public.courses (id, name) values ('', 'Тест'); -- Ошибка courses_id_not_blank
+     insert into public.courses (id, name) values ('c6', '   '); -- Ошибка courses_name_not_blank
+     ```
+   - Попытка вставки задания без существующего пользователя `owner_id`:
+     ```sql
+     insert into public.assignments (owner_id, course_id, title, status, due_date, difficulty)
+     values (gen_random_uuid(), 'c1', 'Тест', 'todo', current_date, 'medium'); -- Ошибка FK owner_id
+     ```
+
+3. **Проверка подключения и чтения справочника из фронтенда:**
+   - В каталоге `frontend` создать `.env.local` с рабочими `VITE_SUPABASE_URL` и `VITE_SUPABASE_PUBLISHABLE_KEY`.
+   - Запустить `npm run dev` и открыть страницу `/assignments/new`.
+   - В инструментах разработчика (Network) найти запрос к `*.supabase.co/rest/v1/courses?select=id%2Cname&order=name.asc` со статусом `200 OK`.
+   - В селекторе курсов отображаются 5 курсов из базы данных, отсортированных по имени.
+
+4. **Проверка кнопки «Обновить справочник» и сохранения черновика:**
+   - Заполнить в форме название («Тестовая работа») и срок сдачи.
+   - В Supabase SQL Editor изменить название одного из курсов:
+     ```sql
+     update public.courses set name = 'Веб-разработка (React & Supabase)' where id = 'c1';
+     ```
+   - В веб-интерфейсе формы нажать кнопку «Обновить справочник».
+   - В выпадающем списке отобразится обновлённое название курса, при этом черновик формы (название, дата) сохраняется без изменений.
+   - Вернуть исходное имя в базе:
+     ```sql
+     update public.courses set name = 'Веб-разработка' where id = 'c1';
+     ```
+
+5. **Проверка пустого состояния справочника:**
+   - Временно очистить таблицу курсов в SQL Editor: `delete from public.courses;`
+   - В форме нажать «Обновить справочник»: отображается сообщение «Курсов пока нет. Сохранение недоступно.», кнопка «Сохранить» заблокирована.
+   - Снова применить `supabase/seed.sql` и нажать «Обновить справочник»: 5 курсов снова доступны, черновик сохранён.
+
+6. **Проверка ошибки конфигурации без .env.local:**
+   - Временно переименовать `frontend/.env.local` в `frontend/.env.local.bak`.
+   - Перезапустить Vite dev-сервер: при загрузке формы возникает понятная ошибка `'Не настроены переменные Supabase в .env.local'`, приложение не обращается по undefined-адресу.
+   - Вернуть файл `.env.local` на место.
+
+7. **Проверка запрета клиентской записи и чтения личных данных:**
+   - Клиентский запрос `supabase.from('courses').insert(...)` с анонимным ключом возвращает ошибку нарушения прав доступа (42501 / permission denied), запись не создаётся.
+   - Запрос `supabase.from('assignments').select('*')` с клиентским ключом возвращает пустой результат/ошибку доступа, личные данные недоступны браузеру.
+
+8. **Проверка качества кода и воспроизводимости:**
+   - Выполнить `npm run lint` — 0 ошибок, 0 предупреждений.
+   - Выполнить `npm test` — все 14 тестов пройдены успешно.
+   - Выполнить `npm run build` — компиляция TypeScript и бандлинг Vite завершаются чисто.
+   - `git status` подтверждает, что `.env.local` не отслеживается и отсутствует в индексе.
+
+### Вопросы для защиты ЛР 5
+
+1. **Чем primary key отличается от foreign key?**
+   - *Primary key* (первичный ключ) уникально идентифицирует каждую строку внутри своей таблицы и не может быть NULL (например, `id` в `courses` и `assignments`).
+   - *Foreign key* (внешний ключ) связывает строку одной таблицы со строкой другой таблицы и гарантирует ссылочную целостность (например, `course_id` ссылается на существующий `courses.id`, а `owner_id` — на пользователя `auth.users`). База данных запрещает сохранять ссылку на несуществующую запись.
+
+2. **Зачем проверять поля и в форме, и ограничениями БД?**
+   - Валидация в форме обеспечивает быстрый, понятный и дружелюбный отклик для пользователя непосредственно в интерфейсе, предотвращая заведомо некорректную отправку.
+   - Ограничения БД (CHECK, NOT NULL, UNIQUE, FK) обеспечивают строгую гарантию целостности данных на уровне хранилища независимо от того, откуда пришёл запрос — через браузер, сторонний API-клиент или скрипт.
+
+3. **Почему id справочника должен оставаться стабильным при изменении name?**
+   - На первичный ключ `id` (`'c1'`, `'c2'`) ссылаются внешние ключи других таблиц (`assignments.course_id`). Если `id` стабилен, то отображаемое название курса (`name`) можно переименовывать (например, «Веб-разработка» → «Веб-разработка на React») без нарушения ссылочной целостности и без необходимости обновлять миллионы связанных записей.
+
+4. **Чем GRANT отличается от политики RLS?**
+   - `GRANT` — это базовые привилегии PostgreSQL на уровне всей таблицы (право выполнять команды `SELECT`, `INSERT`, `UPDATE`, `DELETE`).
+   - Политика `RLS` (Row Level Security) определяет фильтрацию на уровне конкретных строк таблицы (какие именно строки разрешено видеть или изменять субъекту).
+   - Для доступа к данным требуется одновременное выполнение обоих условий: роль должна обладать правом `GRANT` и соответствующей разрешающей политикой RLS (`USING`).
+
+5. **Почему личная таблица закрыта до ЛР 6?**
+   - Таблица `assignments` хранит личные данные пользователей с привязкой к `owner_id uuid references auth.users(id)`. В ЛР 5 аутентификация пользователей ещё не настроена, поэтому открытие клиентского доступа сделало бы персональные данные уязвимыми. До подключения защищённой аутентификации Supabase Auth и политик `auth.uid() = owner_id` в ЛР 6 таблица остаётся заблокированной.
+
+6. **Почему publishable key можно использовать в браузере, а secret key нельзя?**
+   - `publishable key` (или `anon key`) предназначен для идентификации клиентского приложения. Он безопасен для размещения в браузере, поскольку все операции с ним строго ограничены правами PostgreSQL и политиками Row Level Security (RLS).
+   - `secret key` (или legacy `service_role key`) обладает административными привилегиями и полностью обходит RLS. Если он попадёт в браузер, любой пользователь сможет прочитать, изменить или удалить любые данные в базе данных.
+
+7. **Зачем хранить миграцию и seed, если таблицы уже созданы в Dashboard?**
+   - Ручные действия в веб-интерфейсе Dashboard невозможно воспроизвести в другом окружении, протестировать в CI/CD или передать преподавателю/коллегам.
+   - Файлы миграций (`supabase/migrations/`) и seed (`supabase/seed.sql`) фиксируют схему и начальные данные в системе контроля версий Git как код («Database as Code»), позволяя гарантированно развернуть базу данных с нуля на любом проекте.
+
+8. **Как вы доказали, что форма читает Supabase и не использует старый JSON?**
+   - Статический файл `frontend/public/demo/courses.json` полностью удалён из проекта.
+   - Во вкладке Network браузера фиксируется сетевой GET-запрос к REST API Supabase (`https://<project-id>.supabase.co/rest/v1/courses?select=id%2Cname&order=name.asc`).
+   - При изменении названия курса в Supabase через SQL Editor и нажатии кнопки «Обновить справочник» форма мгновенно отображает новое имя курса, полученное из базы данных.
+
+

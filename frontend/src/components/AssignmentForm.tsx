@@ -133,16 +133,20 @@ export function AssignmentForm(props: AssignmentFormProps) {
           )}
 
           {load.status === 'success' && courses.length === 0 && (
+            <p role="status" className="form-feedback-empty">
+              Курсов пока нет. Сохранение недоступно.
+            </p>
+          )}
+
+          {load.status !== 'error' && (
             <div className="course-feedback-block">
-              <p role="status" className="form-feedback-empty">
-                Курсов пока нет. Сохранение недоступно.
-              </p>
               <button
                 type="button"
                 className="button button-secondary button-sm"
                 onClick={retry}
+                disabled={load.status === 'loading'}
               >
-                Повторить
+                Обновить справочник
               </button>
             </div>
           )}

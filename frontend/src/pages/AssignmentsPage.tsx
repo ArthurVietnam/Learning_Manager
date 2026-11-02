@@ -1,18 +1,29 @@
 import { useState } from 'react'
 import { Link } from 'react-router'
-import type { Assignment, AssignmentStatus } from '../types/assignment'
-import { calculateAssignmentStats, isValidAssignmentStatus } from '../types/assignment'
-import { AssignmentCard } from '../components/AssignmentCard'
+import type { Assignment, AssignmentStatus } from '../types/assignment.ts'
+import {
+  calculateAssignmentStats,
+  isValidAssignmentStatus,
+} from '../types/assignment.ts'
+import { AssignmentCard } from '../components/AssignmentCard.tsx'
 
 export interface AssignmentsPageProps {
   assignments: Assignment[]
+  loading?: boolean
+  error?: string | null
+  onRetry?: () => void
 }
 
-export function AssignmentsPage({ assignments }: AssignmentsPageProps) {
+export function AssignmentsPage({
+  assignments,
+  loading = false,
+  error = null,
+  onRetry,
+}: AssignmentsPageProps) {
   const [statusFilter, setStatusFilter] = useState<AssignmentStatus | 'all'>('all')
 
   const visibleAssignments = assignments.filter(
-    (item) => statusFilter === 'all' || item.status === statusFilter
+    (item) => statusFilter === 'all' || item.status === statusFilter,
   )
 
   const stats = calculateAssignmentStats(assignments)
@@ -31,76 +42,111 @@ export function AssignmentsPage({ assignments }: AssignmentsPageProps) {
         </Link>
       </header>
 
-      {assignments.length > 0 && (
-        <aside className="stats-summary" aria-label="Сводка по заданиям">
-          <div className="stat-badge">Всего: <strong>{stats.total}</strong></div>
-          <div className="stat-badge stat-badge-done">Выполнено: <strong>{stats.completed}</strong></div>
-          <div className="stat-badge stat-badge-progress">В процессе: <strong>{stats.inProgress}</strong></div>
-          <div className="stat-badge stat-badge-todo">К выполнению: <strong>{stats.todo}</strong></div>
-          {stats.overdue > 0 && (
-            <div className="stat-badge stat-badge-overdue">Просрочено: <strong>{stats.overdue}</strong></div>
-          )}
-        </aside>
+      {loading && (
+        <div className="status-notice" role="status">
+          <p>Загружаем задания…</p>
+        </div>
       )}
 
-      {assignments.length > 0 && (
-        <div className="filter-bar">
-          <div className="filter-group">
-            <label htmlFor="status-filter" className="filter-label">
-              Фильтр по статусу:
-            </label>
-            <select
-              id="status-filter"
-              className="filter-select"
-              value={statusFilter}
-              onChange={(e) => {
-                const val = e.target.value
-                if (val === 'all' || isValidAssignmentStatus(val)) {
-                  setStatusFilter(val)
-                }
-              }}
+      {error && !loading && (
+        <div className="error-notice" role="alert">
+          <p className="form-error">{error}</p>
+          {onRetry && (
+            <button
+              type="button"
+              className="button button-secondary button-sm"
+              onClick={onRetry}
             >
-              <option value="all">Все</option>
-              <option value="todo">К выполнению</option>
-              <option value="in_progress">В процессе</option>
-              <option value="done">Выполнено</option>
-            </select>
-          </div>
-          <button
-            type="button"
-            className="button button-secondary button-sm"
-            onClick={() => setStatusFilter('all')}
-            disabled={statusFilter === 'all'}
-          >
-            Сбросить фильтр
-          </button>
+              Повторить
+            </button>
+          )}
         </div>
       )}
 
-      {assignments.length === 0 ? (
-        <div className="empty-state">
-          <p>Заданий пока нет.</p>
-          <Link to="/assignments/new" className="button button-primary">
-            Создать задание
-          </Link>
-        </div>
-      ) : visibleAssignments.length === 0 ? (
-        <div className="empty-state">
-          <p>Нет заданий с выбранным статусом.</p>
-          <button
-            type="button"
-            className="button button-secondary"
-            onClick={() => setStatusFilter('all')}
-          >
-            Сбросить фильтр
-          </button>
-        </div>
-      ) : (
-        <div className="assignments-grid">
-          {visibleAssignments.map((assignment) => (
-            <AssignmentCard key={assignment.id} assignment={assignment} />
-          ))}
-        </div>
+      {!loading && !error && (
+        <>
+          {assignments.length > 0 && (
+            <aside className="stats-summary" aria-label="Сводка по заданиям">
+              <div className="stat-badge">
+                Всего: <strong>{stats.total}</strong>
+              </div>
+              <div className="stat-badge stat-badge-done">
+                Выполнено: <strong>{stats.completed}</strong>
+              </div>
+              <div className="stat-badge stat-badge-progress">
+                В процессе: <strong>{stats.inProgress}</strong>
+              </div>
+              <div className="stat-badge stat-badge-todo">
+                К выполнению: <strong>{stats.todo}</strong>
+              </div>
+              {stats.overdue > 0 && (
+                <div className="stat-badge stat-badge-overdue">
+                  Просрочено: <strong>{stats.overdue}</strong>
+                </div>
+              )}
+            </aside>
+          )}
+
+          {assignments.length > 0 && (
+            <div className="filter-bar">
+              <div className="filter-group">
+                <label htmlFor="status-filter" className="filter-label">
+                  Фильтр по статусу:
+                </label>
+                <select
+                  id="status-filter"
+                  className="filter-select"
+                  value={statusFilter}
+                  onChange={(e) => {
+                    const val = e.target.value
+                    if (val === 'all' || isValidAssignmentStatus(val)) {
+                      setStatusFilter(val)
+                    }
+                  }}
+                >
+                  <option value="all">Все</option>
+                  <option value="todo">К выполнению</option>
+                  <option value="in_progress">В процессе</option>
+                  <option value="done">Выполнено</option>
+                </select>
+              </div>
+              <button
+                type="button"
+                className="button button-secondary button-sm"
+                onClick={() => setStatusFilter('all')}
+                disabled={statusFilter === 'all'}
+              >
+                Сбросить фильтр
+              </button>
+            </div>
+          )}
+
+          {assignments.length === 0 ? (
+            <div className="empty-state">
+              <p>Заданий пока нет.</p>
+              <Link to="/assignments/new" className="button button-primary">
+                Создать задание
+              </Link>
+            </div>
+          ) : visibleAssignments.length === 0 ? (
+            <div className="empty-state">
+              <p>Нет заданий с выбранным статусом.</p>
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={() => setStatusFilter('all')}
+              >
+                Сбросить фильтр
+              </button>
+            </div>
+          ) : (
+            <div className="assignments-grid">
+              {visibleAssignments.map((assignment) => (
+                <AssignmentCard key={assignment.id} assignment={assignment} />
+              ))}
+            </div>
+          )}
+        </>
       )}
     </section>
   )

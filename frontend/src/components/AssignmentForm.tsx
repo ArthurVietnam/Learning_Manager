@@ -1,30 +1,33 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import type { AssignmentDraft } from '../types/assignment'
+import type { AssignmentDraft } from '../types/assignment.ts'
 import {
   isValidAssignmentStatus,
   isValidAssignmentDifficulty,
   validateAssignmentDraft,
-} from '../types/assignment'
-import { useCourses } from '../hooks/useCourses'
+} from '../types/assignment.ts'
+import { useCourses } from '../hooks/useCourses.ts'
 
 export interface AssignmentFormProps {
   initialValues: AssignmentDraft
-  onSave: (draft: AssignmentDraft) => void
+  onSave: (draft: AssignmentDraft) => Promise<void> | void
   onCancel: () => void
 }
 
 export function AssignmentForm(props: AssignmentFormProps) {
   const [draft, setDraft] = useState<AssignmentDraft>(() => ({ ...props.initialValues }))
   const [error, setError] = useState<string>('')
+  const [submitError, setSubmitError] = useState<string>('')
+  const [pending, setPending] = useState<boolean>(false)
   const { load, retry } = useCourses()
 
   const courses = load.status === 'success' ? load.data : []
   const selectedCourseExists = courses.some((c) => c.id === draft.courseId)
   const canSave = load.status === 'success' && selectedCourseExists
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (pending) return
 
     if (!canSave) {
       setError('Дождитесь справочника и выберите доступный курс.')
@@ -52,12 +55,23 @@ export function AssignmentForm(props: AssignmentFormProps) {
     }
 
     setError('')
-    props.onSave({
-      ...draft,
-      title: trimmedTitle,
-      description: trimmedDescription,
-      courseTitle,
-    })
+    setSubmitError('')
+
+    try {
+      setPending(true)
+      await props.onSave({
+        ...draft,
+        title: trimmedTitle,
+        description: trimmedDescription,
+        courseTitle,
+      })
+    } catch (err: unknown) {
+      setSubmitError(
+        err instanceof Error ? err.message : 'Не удалось сохранить запись.',
+      )
+    } finally {
+      setPending(false)
+    }
   }
 
   return (
@@ -72,8 +86,9 @@ export function AssignmentForm(props: AssignmentFormProps) {
           type="text"
           value={draft.title}
           required
+          disabled={pending}
           onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-          placeholder="Например, Лабораторная работа 4"
+          placeholder="Например, Лабораторная работа 6"
         />
       </div>
 
@@ -87,14 +102,18 @@ export function AssignmentForm(props: AssignmentFormProps) {
             className="form-select"
             value={draft.courseId}
             required
-            disabled={load.status !== 'success' || courses.length === 0}
+            disabled={load.status !== 'success' || courses.length === 0 || pending}
             onChange={(e) => {
               const nextId = e.target.value
               const selectedCourse = courses.find((c) => c.id === nextId)
               setDraft({
                 ...draft,
                 courseId: nextId,
-                courseTitle: selectedCourse ? selectedCourse.name : (nextId === '' ? '' : draft.courseTitle),
+                courseTitle: selectedCourse
+                  ? selectedCourse.name
+                  : nextId === ''
+                    ? ''
+                    : draft.courseTitle,
               })
             }}
           >
@@ -126,6 +145,7 @@ export function AssignmentForm(props: AssignmentFormProps) {
                 type="button"
                 className="button button-secondary button-sm"
                 onClick={retry}
+                disabled={pending}
               >
                 Повторить
               </button>
@@ -144,18 +164,21 @@ export function AssignmentForm(props: AssignmentFormProps) {
                 type="button"
                 className="button button-secondary button-sm"
                 onClick={retry}
-                disabled={load.status === 'loading'}
+                disabled={load.status === 'loading' || pending}
               >
                 Обновить справочник
               </button>
             </div>
           )}
 
-          {load.status === 'success' && courses.length > 0 && draft.courseId !== '' && !selectedCourseExists && (
-            <p role="status" className="form-hint form-hint-warning">
-              Курс «{draft.courseId}» не найден в справочнике. Выберите доступный курс.
-            </p>
-          )}
+          {load.status === 'success' &&
+            courses.length > 0 &&
+            draft.courseId !== '' &&
+            !selectedCourseExists && (
+              <p role="status" className="form-hint form-hint-warning">
+                Курс «{draft.courseId}» не найден в справочнике. Выберите доступный курс.
+              </p>
+            )}
         </div>
 
         <div className="form-group">
@@ -168,6 +191,7 @@ export function AssignmentForm(props: AssignmentFormProps) {
             type="date"
             value={draft.dueDate}
             required
+            disabled={pending}
             onChange={(e) => setDraft({ ...draft, dueDate: e.target.value })}
           />
         </div>
@@ -182,6 +206,7 @@ export function AssignmentForm(props: AssignmentFormProps) {
             id="assignment-status"
             className="form-select"
             value={draft.status}
+            disabled={pending}
             onChange={(e) => {
               const value = e.target.value
               if (isValidAssignmentStatus(value)) {
@@ -203,6 +228,7 @@ export function AssignmentForm(props: AssignmentFormProps) {
             id="assignment-difficulty"
             className="form-select"
             value={draft.difficulty}
+            disabled={pending}
             onChange={(e) => {
               const value = e.target.value
               if (isValidAssignmentDifficulty(value)) {
@@ -226,6 +252,7 @@ export function AssignmentForm(props: AssignmentFormProps) {
           className="form-textarea"
           rows={4}
           value={draft.description}
+          disabled={pending}
           onChange={(e) => setDraft({ ...draft, description: e.target.value })}
           placeholder="Подробное описание требований или результатов выполнения..."
         />
@@ -237,11 +264,26 @@ export function AssignmentForm(props: AssignmentFormProps) {
         </p>
       )}
 
+      {submitError && (
+        <p className="form-error" role="alert">
+          {submitError}
+        </p>
+      )}
+
       <div className="form-actions">
-        <button type="submit" className="button button-primary" disabled={!canSave}>
-          Сохранить
+        <button
+          type="submit"
+          className="button button-primary"
+          disabled={!canSave || pending}
+        >
+          {pending ? 'Сохраняем…' : 'Сохранить'}
         </button>
-        <button type="button" className="button button-secondary" onClick={props.onCancel}>
+        <button
+          type="button"
+          className="button button-secondary"
+          onClick={props.onCancel}
+          disabled={pending}
+        >
           Отмена
         </button>
       </div>

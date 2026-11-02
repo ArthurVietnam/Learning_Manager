@@ -1,17 +1,17 @@
 import { useNavigate, Link } from 'react-router'
-import type { AssignmentDraft } from '../types/assignment'
-import { EMPTY_ASSIGNMENT_DRAFT } from '../types/assignment'
-import { AssignmentForm } from '../components/AssignmentForm'
+import type { AssignmentDraft } from '../types/assignment.ts'
+import { EMPTY_ASSIGNMENT_DRAFT } from '../types/assignment.ts'
+import { AssignmentForm } from '../components/AssignmentForm.tsx'
 
 export interface NewAssignmentPageProps {
-  onCreate: (draft: AssignmentDraft) => string
+  onCreate: (draft: AssignmentDraft) => Promise<string>
 }
 
 export function NewAssignmentPage({ onCreate }: NewAssignmentPageProps) {
   const navigate = useNavigate()
 
-  function handleSave(draft: AssignmentDraft) {
-    const id = onCreate(draft)
+  async function handleSave(draft: AssignmentDraft) {
+    const id = await onCreate(draft)
     navigate(`/assignments/${id}`)
   }
 
@@ -27,7 +27,7 @@ export function NewAssignmentPage({ onCreate }: NewAssignmentPageProps) {
         <div>
           <h2>Создание задания</h2>
           <p className="page-subtitle">
-            Заполните параметры учебного задания и сохраните в локальный список.
+            Заполните параметры учебного задания и сохраните в Supabase.
           </p>
         </div>
       </header>

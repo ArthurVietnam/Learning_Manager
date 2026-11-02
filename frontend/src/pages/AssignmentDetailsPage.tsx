@@ -1,16 +1,62 @@
+import { useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router'
-import type { Assignment } from '../types/assignment'
-import { STATUS_LABELS, DIFFICULTY_LABELS, isOverdueAssignment } from '../types/assignment'
+import type { Assignment } from '../types/assignment.ts'
+import {
+  STATUS_LABELS,
+  DIFFICULTY_LABELS,
+  isOverdueAssignment,
+} from '../types/assignment.ts'
 
 export interface AssignmentDetailsPageProps {
   assignments: Assignment[]
-  onDelete: (id: string) => void
+  loading?: boolean
+  error?: string | null
+  onRetry?: () => void
+  onDelete: (id: string) => Promise<void>
 }
 
-export function AssignmentDetailsPage({ assignments, onDelete }: AssignmentDetailsPageProps) {
+export function AssignmentDetailsPage({
+  assignments,
+  loading = false,
+  error = null,
+  onRetry,
+  onDelete,
+}: AssignmentDetailsPageProps) {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
+
   const assignment = assignments.find((item) => item.id === id)
+
+  if (loading && !assignment) {
+    return (
+      <section className="page assignment-details">
+        <div className="status-notice" role="status">
+          <p>Загружаем задание…</p>
+        </div>
+      </section>
+    )
+  }
+
+  if (error && !assignment) {
+    return (
+      <section className="page assignment-details">
+        <div className="error-notice" role="alert">
+          <p className="form-error">{error}</p>
+          {onRetry && (
+            <button
+              type="button"
+              className="button button-secondary button-sm"
+              onClick={onRetry}
+            >
+              Повторить
+            </button>
+          )}
+        </div>
+      </section>
+    )
+  }
 
   if (!assignment) {
     return (
@@ -26,13 +72,23 @@ export function AssignmentDetailsPage({ assignments, onDelete }: AssignmentDetai
 
   const isOverdue = isOverdueAssignment(assignment)
 
-  function handleDelete() {
-    if (!assignment) {
+  async function handleDelete() {
+    if (!assignment || isDeleting) {
       return
     }
     if (window.confirm(`Удалить задание «${assignment.title}»?`)) {
-      onDelete(assignment.id)
-      navigate('/assignments', { replace: true })
+      try {
+        setIsDeleting(true)
+        setDeleteError('')
+        await onDelete(assignment.id)
+        navigate('/assignments', { replace: true })
+      } catch (err: unknown) {
+        setDeleteError(
+          err instanceof Error ? err.message : 'Не удалось удалить задание.',
+        )
+      } finally {
+        setIsDeleting(false)
+      }
     }
   }
 
@@ -54,7 +110,9 @@ export function AssignmentDetailsPage({ assignments, onDelete }: AssignmentDetai
           <span className={`badge status-badge status-${assignment.status}`}>
             {STATUS_LABELS[assignment.status]}
           </span>
-          <span className={`badge difficulty-badge difficulty-${assignment.difficulty}`}>
+          <span
+            className={`badge difficulty-badge difficulty-${assignment.difficulty}`}
+          >
             Сложность: {DIFFICULTY_LABELS[assignment.difficulty]}
           </span>
         </div>
@@ -70,7 +128,9 @@ export function AssignmentDetailsPage({ assignments, onDelete }: AssignmentDetai
         <section className="details-meta-grid">
           <div className="meta-item">
             <span className="meta-label">Курс</span>
-            <span className="meta-value">{assignment.courseTitle || assignment.courseId}</span>
+            <span className="meta-value">
+              {assignment.courseTitle || assignment.courseId}
+            </span>
           </div>
           <div className="meta-item">
             <span className="meta-label">Дедлайн</span>
@@ -84,18 +144,34 @@ export function AssignmentDetailsPage({ assignments, onDelete }: AssignmentDetai
           </div>
           <div className="meta-item">
             <span className="meta-label">Сложность</span>
-            <span className="meta-value">{DIFFICULTY_LABELS[assignment.difficulty]}</span>
+            <span className="meta-value">
+              {DIFFICULTY_LABELS[assignment.difficulty]}
+            </span>
           </div>
         </section>
       </div>
 
+      {deleteError && (
+        <p className="form-error" role="alert">
+          {deleteError}
+        </p>
+      )}
+
       <footer className="details-footer">
         <div className="details-actions">
-          <Link to={`/assignments/${assignment.id}/edit`} className="button button-primary">
+          <Link
+            to={`/assignments/${assignment.id}/edit`}
+            className="button button-primary"
+          >
             Редактировать
           </Link>
-          <button type="button" className="button button-danger" onClick={handleDelete}>
-            Удалить
+          <button
+            type="button"
+            className="button button-danger"
+            onClick={handleDelete}
+            disabled={isDeleting}
+          >
+            {isDeleting ? 'Удаляем…' : 'Удалить'}
           </button>
           <Link to="/assignments" className="button button-secondary">
             К списку заданий

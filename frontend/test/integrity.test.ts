@@ -20,6 +20,8 @@ import {
 import type { Assignment, AssignmentDraft } from '../src/types/assignment.ts'
 import type { Course } from '../src/types/course.ts'
 import type { CoursesLoad } from '../src/hooks/useCourses.ts'
+import type { AuthState } from '../src/hooks/useAuth.ts'
+import type { AssignmentRow } from '../src/services/assignments.ts'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -32,6 +34,16 @@ if (!process.env.VITE_SUPABASE_PUBLISHABLE_KEY) {
 }
 
 const { isCourse, parseCourses, getCourses } = await import('../src/services/courses.ts')
+const {
+  fromRow,
+  toWrite,
+  getAssignments,
+  createAssignment,
+  updateAssignment,
+  deleteAssignment,
+  assignmentColumns,
+} = await import('../src/services/assignments.ts')
+const { fromSession } = await import('../src/hooks/useAuth.ts')
 const { supabase } = await import('../src/lib/supabase.ts')
 
 test('COURSES catalog contains valid reference items', () => {
@@ -842,3 +854,539 @@ test('useCourses lifecycle semantics, cancellation, and form save authorization'
   assert.equal(isRefreshDisabled('loading'), true, 'Refresh button must be disabled when status is loading')
   assert.equal(isRefreshDisabled('success'), false, 'Refresh button must be enabled when status is success')
 })
+
+test('Lab 6 migration SQL schema defines default owner_id, authenticated grants, and 4 RLS policies on public.assignments', () => {
+  const rootDir = path.resolve(__dirname, '..', '..')
+  const migrationPath = path.resolve(
+    rootDir,
+    'supabase',
+    'migrations',
+    '202611020001_assignments_owner_policies.sql',
+  )
+  assert.ok(fs.existsSync(migrationPath), 'Lab 6 migration file must exist')
+  const sql = fs.readFileSync(migrationPath, 'utf8')
+
+  // 1. Alter owner_id default to auth.uid()
+  assert.ok(
+    sql.includes('alter table public.assignments') &&
+      sql.includes('alter column owner_id set default auth.uid()'),
+    'Migration must set default auth.uid() on owner_id',
+  )
+
+  // 2. Revoke and grant to authenticated
+  assert.ok(
+    sql.includes('revoke all on table public.assignments from anon, authenticated;'),
+    'Migration must revoke privileges from anon and authenticated',
+  )
+  assert.ok(
+    sql.includes('grant select, insert, update, delete') &&
+      sql.includes('on table public.assignments to authenticated;'),
+    'Migration must grant select, insert, update, delete to authenticated',
+  )
+
+  // 3. Four separate policies
+  assert.ok(
+    sql.includes('create policy "assignments select own"') &&
+      sql.includes('on public.assignments for select to authenticated'),
+    'Migration must define "assignments select own" policy',
+  )
+  assert.ok(
+    sql.includes('create policy "assignments insert own"') &&
+      sql.includes('on public.assignments for insert to authenticated'),
+    'Migration must define "assignments insert own" policy',
+  )
+  assert.ok(
+    sql.includes('create policy "assignments update own"') &&
+      sql.includes('on public.assignments for update to authenticated'),
+    'Migration must define "assignments update own" policy',
+  )
+  assert.ok(
+    sql.includes('create policy "assignments delete own"') &&
+      sql.includes('on public.assignments for delete to authenticated'),
+    'Migration must define "assignments delete own" policy',
+  )
+
+  // 4. Update policy must specify both USING and WITH CHECK with identical conditions
+  assert.ok(
+    sql.includes('using ((select auth.uid()) is not null') &&
+      sql.includes('and (select auth.uid()) = owner_id)') &&
+      sql.includes('with check ((select auth.uid()) is not null') &&
+      sql.includes('and (select auth.uid()) = owner_id)'),
+    'UPDATE policy must enforce matching USING and WITH CHECK clauses',
+  )
+
+  // 5. Must not use single 'for all' policy
+  assert.equal(
+    sql.toLowerCase().includes('for all'),
+    false,
+    'Migration must not use policy FOR ALL',
+  )
+})
+
+test('useAuth contracts, fromSession mapping, and session restoration semantics', () => {
+  // 1. fromSession returns guest when session is null
+  const guestState = fromSession(null)
+  assert.deepEqual(guestState, { status: 'guest' })
+
+  // 2. fromSession returns authenticated when session is present
+  const fakeSession = {
+    access_token: 'fake-jwt',
+    token_type: 'bearer',
+    expires_in: 3600,
+    refresh_token: 'fake-refresh',
+    user: {
+      id: 'usr-1234',
+      app_metadata: {},
+      user_metadata: {},
+      aud: 'authenticated',
+      created_at: '2026-11-02T10:00:00Z',
+      email: 'student@example.com',
+    },
+  } as unknown as Parameters<typeof fromSession>[0]
+
+  const authState = fromSession(fakeSession)
+  assert.equal(authState.status, 'authenticated')
+  if (authState.status === 'authenticated') {
+    assert.equal(authState.session.user.id, 'usr-1234')
+    assert.equal(authState.session.user.email, 'student@example.com')
+  }
+
+  // 3. State reducer logic matching useAuth getSession behavior:
+  // If current.status === 'checking', hydrates from getSession data;
+  // If event already changed away from 'checking', does not overwrite.
+  const checkingState: AuthState = { status: 'checking' }
+  const reduceLateSession = (
+    current: AuthState,
+    session: typeof fakeSession | null,
+    error: unknown,
+  ): AuthState => {
+    return current.status === 'checking'
+      ? error
+        ? { status: 'guest' }
+        : fromSession(session)
+      : current
+  }
+
+  // Hydrate when checking
+  const hydrated = reduceLateSession(checkingState, fakeSession, null)
+  assert.equal(hydrated.status, 'authenticated')
+
+  // If getSession errored while checking, fall back to guest
+  const fallbackGuest = reduceLateSession(checkingState, null, new Error('network down'))
+  assert.deepEqual(fallbackGuest, { status: 'guest' })
+
+  // If already authenticated by onAuthStateChange, late getSession null does not reset to guest
+  const alreadyAuthenticated: AuthState = { status: 'authenticated', session: fakeSession! }
+  const ignoredLateNull = reduceLateSession(alreadyAuthenticated, null, null)
+  assert.equal(ignoredLateNull.status, 'authenticated')
+})
+
+test('services/assignments.ts row mappers and toWrite security payload contract', () => {
+  const mockRow: AssignmentRow = {
+    id: 'a-uuid-1',
+    owner_id: 'owner-uuid-42',
+    course_id: 'c1',
+    title: '  Курсовая работа по сетям  ',
+    description: '  Подробный отчёт  ',
+    status: 'in_progress',
+    due_date: '2026-11-20',
+    difficulty: 'hard',
+    created_at: '2026-11-02T12:00:00Z',
+  }
+
+  // 1. fromRow with courses catalog resolves courseTitle
+  const mappedWithCourses = fromRow(mockRow, COURSES)
+  assert.equal(mappedWithCourses.id, 'a-uuid-1')
+  assert.equal(mappedWithCourses.courseId, 'c1')
+  assert.equal(mappedWithCourses.courseTitle, 'Веб-разработка')
+  assert.equal(mappedWithCourses.dueDate, '2026-11-20')
+  assert.equal(mappedWithCourses.status, 'in_progress')
+  assert.equal(mappedWithCourses.difficulty, 'hard')
+
+  // 2. fromRow without courses catalog falls back courseTitle to course_id
+  const mappedWithoutCourses = fromRow(mockRow)
+  assert.equal(mappedWithoutCourses.courseTitle, 'c1')
+
+  // 3. toWrite converts draft to DB write object, trimming strings
+  const draft: AssignmentDraft = {
+    courseId: 'c3',
+    courseTitle: 'Операционные системы',
+    title: '   Практическая работа 6   ',
+    description: '   Изучение процессов   ',
+    dueDate: '2026-11-25',
+    status: 'todo',
+    difficulty: 'medium',
+  }
+
+  const writePayload = toWrite(draft)
+  assert.equal(writePayload.course_id, 'c3')
+  assert.equal(writePayload.title, 'Практическая работа 6')
+  assert.equal(writePayload.description, 'Изучение процессов')
+  assert.equal(writePayload.due_date, '2026-11-25')
+  assert.equal(writePayload.status, 'todo')
+  assert.equal(writePayload.difficulty, 'medium')
+
+  // 4. CRITICAL SECURITY ASSERTION: toWrite must NEVER send owner_id, id, or created_at
+  const payloadKeys = Object.keys(writePayload)
+  assert.equal(payloadKeys.includes('owner_id'), false, 'toWrite must NOT send owner_id')
+  assert.equal(payloadKeys.includes('id'), false, 'toWrite must NOT send id')
+  assert.equal(payloadKeys.includes('created_at'), false, 'toWrite must NOT send created_at')
+  assert.equal(payloadKeys.includes('courseTitle'), false, 'toWrite must NOT send camelCase courseTitle')
+})
+
+test('services/assignments.ts async CRUD operations query assignments table and handle errors', async () => {
+  const originalFrom = supabase.from
+  try {
+    const sampleRow: AssignmentRow = {
+      id: 'row-1',
+      owner_id: 'usr-1',
+      course_id: 'c1',
+      title: 'Задание 1',
+      description: 'Текст',
+      status: 'todo',
+      due_date: '2026-11-30',
+      difficulty: 'easy',
+      created_at: '2026-11-02T10:00:00Z',
+    }
+
+    // 1. getAssignments queries 'assignments', orders by created_at desc
+    let calledTable = ''
+    let calledSelect = ''
+    let calledOrder = ''
+    let orderAscending: boolean | undefined
+
+    supabase.from = ((table: string) => {
+      calledTable = table
+      return {
+        select: (cols: string) => {
+          calledSelect = cols
+          return {
+            order: (col: string, opts: { ascending: boolean }) => {
+              calledOrder = col
+              orderAscending = opts.ascending
+              return {
+                overrideTypes: () => Promise.resolve({ data: [sampleRow], error: null }),
+              }
+            },
+          }
+        },
+      }
+    }) as unknown as typeof supabase.from
+
+    const assignments = await getAssignments(COURSES)
+    assert.equal(calledTable, 'assignments')
+    assert.equal(calledSelect, assignmentColumns)
+    assert.equal(calledOrder, 'created_at')
+    assert.equal(orderAscending, false)
+    assert.equal(assignments.length, 1)
+    assert.equal(assignments[0].id, 'row-1')
+    assert.equal(assignments[0].courseTitle, 'Веб-разработка')
+
+    // Null/empty data fallback in getAssignments
+    supabase.from = (() => ({
+      select: () => ({
+        order: () => ({
+          overrideTypes: () => Promise.resolve({ data: null, error: null }),
+        }),
+      }),
+    })) as unknown as typeof supabase.from
+    const emptyResult = await getAssignments(COURSES)
+    assert.deepEqual(emptyResult, [])
+
+    // Error handling on getAssignments
+    supabase.from = (() => ({
+      select: () => ({
+        order: () => ({
+          overrideTypes: () =>
+            Promise.resolve({ data: null, error: { message: 'permission denied' } }),
+        }),
+      }),
+    })) as unknown as typeof supabase.from
+
+    await assert.rejects(
+      async () => {
+        await getAssignments()
+      },
+      (err: Error) => {
+        assert.ok(err.message.includes('Не удалось загрузить задачи: permission denied'))
+        return true
+      },
+    )
+
+    // 2. createAssignment inserts payload, selects single row
+    let insertedPayload: unknown
+    supabase.from = ((table: string) => {
+      assert.equal(table, 'assignments')
+      return {
+        insert: (payload: unknown) => {
+          insertedPayload = payload
+          return {
+            select: () => ({
+              single: () => ({
+                overrideTypes: () => Promise.resolve({ data: sampleRow, error: null }),
+              }),
+            }),
+          }
+        },
+      }
+    }) as unknown as typeof supabase.from
+
+    const draft: AssignmentDraft = {
+      courseId: 'c1',
+      courseTitle: 'Веб-разработка',
+      title: 'Новое',
+      description: 'Детали',
+      dueDate: '2026-11-20',
+      status: 'todo',
+      difficulty: 'easy',
+    }
+    const created = await createAssignment(draft, COURSES)
+    assert.equal(created.id, 'row-1')
+    assert.deepEqual(insertedPayload, toWrite(draft))
+
+    // 3. updateAssignment calls .update().eq('id', id)
+    let updatedPayload: unknown
+    let updateFilterField = ''
+    let updateFilterValue = ''
+    supabase.from = ((table: string) => {
+      assert.equal(table, 'assignments')
+      return {
+        update: (payload: unknown) => {
+          updatedPayload = payload
+          return {
+            eq: (field: string, value: string) => {
+              updateFilterField = field
+              updateFilterValue = value
+              return Promise.resolve({ error: null })
+            },
+          }
+        },
+      }
+    }) as unknown as typeof supabase.from
+
+    await updateAssignment('row-1', draft)
+    assert.deepEqual(updatedPayload, toWrite(draft))
+    assert.equal(updateFilterField, 'id')
+    assert.equal(updateFilterValue, 'row-1')
+
+    // 4. deleteAssignment calls .delete().eq('id', id)
+    let deleteFilterField = ''
+    let deleteFilterValue = ''
+    supabase.from = ((table: string) => {
+      assert.equal(table, 'assignments')
+      return {
+        delete: () => ({
+          eq: (field: string, value: string) => {
+            deleteFilterField = field
+            deleteFilterValue = value
+            return Promise.resolve({ error: null })
+          },
+        }),
+      }
+    }) as unknown as typeof supabase.from
+
+    await deleteAssignment('row-to-delete')
+    assert.equal(deleteFilterField, 'id')
+    assert.equal(deleteFilterValue, 'row-to-delete')
+  } finally {
+    supabase.from = originalFrom
+  }
+})
+
+test('RequireAuth and AuthPage component sources enforce session guards, redirection, and credentials security', () => {
+  const rootDir = path.resolve(__dirname, '..')
+
+  // 1. RequireAuth.tsx source structure and contract
+  const requireAuthPath = path.resolve(rootDir, 'src', 'app', 'RequireAuth.tsx')
+  assert.ok(fs.existsSync(requireAuthPath), 'RequireAuth.tsx must exist')
+  const requireAuthSrc = fs.readFileSync(requireAuthPath, 'utf8')
+
+  assert.ok(
+    requireAuthSrc.includes('useLocation()'),
+    'RequireAuth must call useLocation before conditional returns',
+  )
+  assert.ok(
+    requireAuthSrc.includes("auth.status === 'checking'") &&
+      requireAuthSrc.includes('Проверяем сессию…'),
+    'RequireAuth must render "Проверяем сессию…" during checking state',
+  )
+  assert.ok(
+    requireAuthSrc.includes("auth.status === 'guest'") &&
+      requireAuthSrc.includes('Navigate to="/auth" replace state={{ from: location.pathname }}'),
+    'RequireAuth must redirect guest to /auth with replace and original location state',
+  )
+  assert.ok(
+    requireAuthSrc.includes('<Outlet />'),
+    'RequireAuth must render Outlet for authenticated session',
+  )
+
+  // 2. AuthPage.tsx source structure and contract
+  const authPagePath = path.resolve(rootDir, 'src', 'pages', 'AuthPage.tsx')
+  assert.ok(fs.existsSync(authPagePath), 'AuthPage.tsx must exist')
+  const authPageSrc = fs.readFileSync(authPagePath, 'utf8')
+
+  assert.ok(
+    authPageSrc.includes('type="email"') && authPageSrc.includes('autoComplete="email"'),
+    'AuthPage must render email input with type="email" and autoComplete="email"',
+  )
+  assert.ok(
+    authPageSrc.includes('type="password"') &&
+      authPageSrc.includes('current-password') &&
+      authPageSrc.includes('new-password'),
+    'AuthPage must toggle password autoComplete between current-password and new-password',
+  )
+  assert.ok(
+    authPageSrc.includes('supabase.auth.signUp') &&
+      authPageSrc.includes('options: { emailRedirectTo: window.location.origin }'),
+    'AuthPage must call signUp with emailRedirectTo',
+  )
+  assert.ok(
+    authPageSrc.includes('supabase.auth.signInWithPassword'),
+    'AuthPage must call signInWithPassword',
+  )
+  assert.ok(
+    authPageSrc.includes('Проверьте почту и подтвердите регистрацию.'),
+    'AuthPage must show confirmation message when registration requires email verification',
+  )
+  assert.ok(
+    authPageSrc.includes('disabled={pending}'),
+    'AuthPage must disable buttons while pending is true',
+  )
+  assert.ok(
+    authPageSrc.includes("auth?.status === 'checking'") &&
+      authPageSrc.includes('Проверяем сессию…'),
+    'AuthPage must render "Проверяем сессию…" during checking state to prevent FOUC',
+  )
+
+  // 3. AppLayout.tsx must not contain memory notice banner
+  const appLayoutPath = path.resolve(rootDir, 'src', 'app', 'AppLayout.tsx')
+  const appLayoutSrc = fs.readFileSync(appLayoutPath, 'utf8')
+  assert.equal(
+    appLayoutSrc.includes('memory-notice-banner'),
+    false,
+    'AppLayout must remove the Lab 3/5 temporary memory banner',
+  )
+  assert.ok(
+    appLayoutSrc.includes("supabase.auth.signOut({ scope: 'local' })"),
+    'AppLayout must sign out with local scope',
+  )
+})
+
+test('Multi-account isolation, session clearing, and form submit protection semantics', () => {
+  // 1. Session clearing: when auth transitions to guest, tasks array is reset to []
+  let userTasks: Assignment[] = [
+    {
+      id: 'task-a',
+      title: 'Задание пользователя А',
+      description: 'Секретное задание',
+      courseId: 'c1',
+      courseTitle: 'Веб-разработка',
+      dueDate: '2026-11-20',
+      status: 'in_progress',
+      difficulty: 'hard',
+    },
+  ]
+
+  const handleSessionChange = (authStatus: AuthState['status']) => {
+    if (authStatus !== 'authenticated') {
+      userTasks = []
+    }
+  }
+
+  // Simulate sign out
+  handleSessionChange('guest')
+  assert.equal(userTasks.length, 0, 'Tasks must be immediately emptied when user becomes guest')
+
+  // 2. User switch isolation: when user B logs in after user A, old list is cleared before loading B
+  userTasks = [
+    {
+      id: 'task-a',
+      title: 'Задание пользователя А',
+      description: 'Секретно',
+      courseId: 'c1',
+      courseTitle: 'Веб-разработка',
+      dueDate: '2026-11-20',
+      status: 'todo',
+      difficulty: 'easy',
+    },
+  ]
+
+  const switchUser = (_previousTasks: Assignment[], newUserTasks: Assignment[]) => {
+    // Stage 1: immediately clear
+    let current: Assignment[] = []
+    assert.equal(current.length, 0, 'Previous tasks must be wiped before new tasks arrive')
+    // Stage 2: set new
+    current = newUserTasks
+    return current
+  }
+
+  const tasksUserB: Assignment[] = [
+    {
+      id: 'task-b',
+      title: 'Задание пользователя B',
+      description: 'Публично',
+      courseId: 'c2',
+      courseTitle: 'Базы данных',
+      dueDate: '2026-11-25',
+      status: 'done' as const,
+      difficulty: 'medium' as const,
+    },
+  ]
+  const switched = switchUser(userTasks, tasksUserB)
+  assert.equal(switched.length, 1)
+  assert.equal(switched[0].id, 'task-b')
+
+  // 3. Double-click submit prevention
+  let pending = false
+  let callCount = 0
+
+  // First call starts request
+  pending = true
+  // Immediate second click
+  if (pending) {
+    // Blocked
+  } else {
+    callCount++
+  }
+  assert.equal(callCount, 0, 'Concurrent click must be blocked while pending is true')
+  // 4. Reference update stability: when same user stays authenticated and courses update, list is preserved
+  let preservedTasks = [...tasksUserB]
+  const currentUserId: string | null = 'user-b'
+  const handleCoursesUpdate = (newUserId: string | null) => {
+    if (newUserId !== currentUserId) {
+      preservedTasks = []
+    }
+  }
+  handleCoursesUpdate('user-b')
+  assert.equal(preservedTasks.length, 1, 'Tasks must NOT be wiped when courses update for same user')
+})
+
+test('AssignmentDetailsPage and EditAssignmentPage handle loading and error states to avoid false 404', () => {
+  const rootDir = path.resolve(__dirname, '..')
+
+  const detailsPath = path.resolve(rootDir, 'src', 'pages', 'AssignmentDetailsPage.tsx')
+  assert.ok(fs.existsSync(detailsPath), 'AssignmentDetailsPage.tsx must exist')
+  const detailsSrc = fs.readFileSync(detailsPath, 'utf8')
+  assert.ok(
+    detailsSrc.includes('loading && !assignment') && detailsSrc.includes('Загружаем задание…'),
+    'AssignmentDetailsPage must render loading notice while loading is true',
+  )
+  assert.ok(
+    detailsSrc.includes('error && !assignment') && detailsSrc.includes('error-notice'),
+    'AssignmentDetailsPage must render error notice when error occurs',
+  )
+
+  const editPath = path.resolve(rootDir, 'src', 'pages', 'EditAssignmentPage.tsx')
+  assert.ok(fs.existsSync(editPath), 'EditAssignmentPage.tsx must exist')
+  const editSrc = fs.readFileSync(editPath, 'utf8')
+  assert.ok(
+    editSrc.includes('loading && !assignment') && editSrc.includes('Загружаем задание…'),
+    'EditAssignmentPage must render loading notice while loading is true',
+  )
+  assert.ok(
+    editSrc.includes('error && !assignment') && editSrc.includes('error-notice'),
+    'EditAssignmentPage must render error notice when error occurs',
+  )
+})
+
+

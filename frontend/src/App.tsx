@@ -8,7 +8,12 @@ import { AssignmentDetailsPage } from './pages/AssignmentDetailsPage.tsx'
 import { NewAssignmentPage } from './pages/NewAssignmentPage.tsx'
 import { EditAssignmentPage } from './pages/EditAssignmentPage.tsx'
 import { NotFoundPage } from './pages/NotFoundPage.tsx'
-import type { Assignment, AssignmentDraft } from './types/assignment.ts'
+import type {
+  Assignment,
+  AssignmentDraft,
+  AssignmentFilters,
+} from './types/assignment.ts'
+import { emptyAssignmentFilters } from './types/assignment.ts'
 import { useAuth } from './hooks/useAuth.ts'
 import { useCourses } from './hooks/useCourses.ts'
 import {
@@ -27,37 +32,44 @@ export default function App() {
   const [assignments, setAssignments] = useState<Assignment[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [appliedFilters, setAppliedFilters] =
+    useState<AssignmentFilters>(emptyAssignmentFilters)
 
   const userId = auth.status === 'authenticated' ? auth.session.user.id : null
   const prevUserIdRef = useRef<string | null>(null)
 
-  const fetchAssignments = useCallback(async () => {
-    if (auth.status !== 'authenticated') {
-      setAssignments([])
-      setLoading(false)
-      setError(null)
-      return
-    }
+  const fetchAssignments = useCallback(
+    async (filtersToUse: AssignmentFilters = appliedFilters) => {
+      if (auth.status !== 'authenticated') {
+        setAssignments([])
+        setLoading(false)
+        setError(null)
+        return
+      }
 
-    setLoading(true)
-    setError(null)
-    try {
-      const data = await getAssignments(courses)
-      setAssignments(data)
-    } catch (err: unknown) {
-      setError(
-        err instanceof Error ? err.message : 'Не удалось загрузить задания.',
-      )
-    } finally {
-      setLoading(false)
-    }
-  }, [auth.status, courses])
+      setLoading(true)
+      setError(null)
+      try {
+        const data = await getAssignments(filtersToUse, courses)
+        setAssignments(data)
+      } catch (err: unknown) {
+        setError(
+          err instanceof Error ? err.message : 'Не удалось загрузить задания.',
+        )
+      } finally {
+        setLoading(false)
+      }
+    },
+    [auth.status, appliedFilters, courses],
+  )
 
   useEffect(() => {
     if (auth.status !== 'authenticated') {
       prevUserIdRef.current = null
       // oxlint-disable-next-line react/set-state-in-effect
       setAssignments([])
+      // oxlint-disable-next-line react/set-state-in-effect
+      setAppliedFilters(emptyAssignmentFilters)
       setLoading(false)
       setError(null)
       return
@@ -69,12 +81,14 @@ export default function App() {
       prevUserIdRef.current = userId
       // oxlint-disable-next-line react/set-state-in-effect
       setAssignments([])
+      // oxlint-disable-next-line react/set-state-in-effect
+      setAppliedFilters(emptyAssignmentFilters)
     }
 
     setLoading(true)
     setError(null)
 
-    getAssignments(courses)
+    getAssignments(emptyAssignmentFilters, courses)
       .then((data) => {
         if (!active) return
         setAssignments(data)
@@ -93,13 +107,24 @@ export default function App() {
     }
   }, [auth.status, userId, courses])
 
+  async function handleApplyFilters(newFilters: AssignmentFilters) {
+    setAppliedFilters(newFilters)
+    await fetchAssignments(newFilters)
+  }
+
+  async function handleResetFilters() {
+    setAppliedFilters(emptyAssignmentFilters)
+    await fetchAssignments(emptyAssignmentFilters)
+  }
+
   async function handleCreateAssignment(draft: AssignmentDraft): Promise<string> {
     const created = await apiCreateAssignment(draft, courses)
+    setAppliedFilters(emptyAssignmentFilters)
     try {
-      const fresh = await getAssignments(courses)
+      const fresh = await getAssignments(emptyAssignmentFilters, courses)
       setAssignments(fresh)
     } catch {
-      setAssignments((prev) => [created, ...prev])
+      setAssignments((prev) => [created, ...prev.filter((a) => a.id !== created.id)])
     }
     return created.id
   }
@@ -110,8 +135,14 @@ export default function App() {
   ): Promise<void> {
     await apiUpdateAssignment(id, draft)
     try {
-      const fresh = await getAssignments(courses)
-      setAssignments(fresh)
+      const fresh = await getAssignments(appliedFilters, courses)
+      if (!fresh.some((a) => a.id === id)) {
+        setAppliedFilters(emptyAssignmentFilters)
+        const allFresh = await getAssignments(emptyAssignmentFilters, courses)
+        setAssignments(allFresh)
+      } else {
+        setAssignments(fresh)
+      }
     } catch {
       setAssignments((prev) =>
         prev.map((a) => (a.id === id ? { ...a, ...draft, id } : a)),
@@ -122,7 +153,7 @@ export default function App() {
   async function handleDeleteAssignment(id: string): Promise<void> {
     await apiDeleteAssignment(id)
     try {
-      const fresh = await getAssignments(courses)
+      const fresh = await getAssignments(appliedFilters, courses)
       setAssignments(fresh)
     } catch {
       setAssignments((prev) => prev.filter((a) => a.id !== id))
@@ -152,7 +183,11 @@ export default function App() {
                 assignments={assignments}
                 loading={loading}
                 error={error}
-                onRetry={fetchAssignments}
+                filters={appliedFilters}
+                courses={courses}
+                onApplyFilters={handleApplyFilters}
+                onResetFilters={handleResetFilters}
+                onRetry={() => fetchAssignments(appliedFilters)}
               />
             }
           />
@@ -167,7 +202,7 @@ export default function App() {
                 assignments={assignments}
                 loading={loading}
                 error={error}
-                onRetry={fetchAssignments}
+                onRetry={() => fetchAssignments(emptyAssignmentFilters)}
                 onDelete={handleDeleteAssignment}
               />
             }
@@ -179,7 +214,7 @@ export default function App() {
                 assignments={assignments}
                 loading={loading}
                 error={error}
-                onRetry={fetchAssignments}
+                onRetry={() => fetchAssignments(emptyAssignmentFilters)}
                 onUpdate={handleUpdateAssignment}
               />
             }

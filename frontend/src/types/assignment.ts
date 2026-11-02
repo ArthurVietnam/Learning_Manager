@@ -28,6 +28,18 @@ export const EMPTY_ASSIGNMENT_DRAFT: AssignmentDraft = {
   difficulty: 'medium',
 }
 
+export type AssignmentFilters = {
+  query: string
+  status: 'all' | AssignmentStatus
+  courseId: 'all' | string
+}
+
+export const emptyAssignmentFilters: AssignmentFilters = {
+  query: '',
+  status: 'all',
+  courseId: 'all',
+}
+
 export function validateAssignmentDraft(
   draft: AssignmentDraft,
   availableCourses: { id: string }[] = COURSES,

@@ -187,7 +187,107 @@
   color: #b91c1c;
 }
 
-/* Filter bar */
+/* Assignment Filters Form */
+.assignment-filters-form {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 24px;
+}
+
+.filters-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+}
+
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 160px;
+  flex: 1 1 180px;
+}
+
+.filter-field-search {
+  flex: 2 1 240px;
+}
+
+.filter-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.filter-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.filter-search-input {
+  width: 100%;
+  padding-right: 32px;
+}
+
+.filter-clear-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+  line-height: 1;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.filter-clear-btn:hover {
+  color: #334155;
+  background-color: #e2e8f0;
+}
+
+.filter-select {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 0.95rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background-color: #ffffff;
+  color: #0f172a;
+  font-family: inherit;
+}
+
+.filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 1px;
+}
+
+.filter-pending-indicator {
+  font-size: 0.85rem;
+  color: #64748b;
+  font-weight: 500;
+}
+
+/* Empty states distinction */
+.empty-search-state {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.empty-list-state {
+  border-color: #93c5fd;
+  background: #f0f7ff;
+}
+
 .filter-bar {
   display: flex;
   align-items: center;
@@ -204,22 +304,6 @@
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.filter-label {
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: #475569;
-}
-
-.filter-select {
-  padding: 6px 12px;
-  font-size: 0.9rem;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  background-color: #ffffff;
-  color: #0f172a;
-  font-family: inherit;
 }
 
 /* Buttons */

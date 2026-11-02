@@ -15,9 +15,10 @@ import {
   isOverdueAssignment,
   calculateAssignmentStats,
   EMPTY_ASSIGNMENT_DRAFT,
+  emptyAssignmentFilters,
   validateAssignmentDraft,
 } from '../src/types/assignment.ts'
-import type { Assignment, AssignmentDraft } from '../src/types/assignment.ts'
+import type { Assignment, AssignmentDraft, AssignmentFilters } from '../src/types/assignment.ts'
 import type { Course } from '../src/types/course.ts'
 import type { CoursesLoad } from '../src/hooks/useCourses.ts'
 import type { AuthState } from '../src/hooks/useAuth.ts'
@@ -38,6 +39,7 @@ const {
   fromRow,
   toWrite,
   getAssignments,
+  getAssignment,
   createAssignment,
   updateAssignment,
   deleteAssignment,
@@ -1388,5 +1390,394 @@ test('AssignmentDetailsPage and EditAssignmentPage handle loading and error stat
     'EditAssignmentPage must render error notice when error occurs',
   )
 })
+
+test('Lab 7 migration SQL schema defines ON UPDATE CASCADE ON DELETE RESTRICT on course_id and query indexes', () => {
+  const rootDir = path.resolve(__dirname, '..', '..')
+  const migrationPath = path.resolve(
+    rootDir,
+    'supabase',
+    'migrations',
+    '202611020002_assignments_relations_and_indexes.sql',
+  )
+  assert.ok(fs.existsSync(migrationPath), 'Lab 7 migration file must exist')
+  const sql = fs.readFileSync(migrationPath, 'utf8')
+
+  // 1. Foreign key constraint
+  assert.ok(
+    sql.includes('alter table public.assignments') &&
+      sql.includes('drop constraint if exists assignments_course_id_fkey;'),
+    'Migration must drop existing assignments_course_id_fkey constraint if present',
+  )
+  assert.ok(
+    sql.includes('add constraint assignments_course_id_fkey') &&
+      sql.includes('foreign key (course_id) references public.courses(id)') &&
+      sql.toLowerCase().includes('on update cascade') &&
+      sql.toLowerCase().includes('on delete restrict'),
+    'Migration must add foreign key with ON UPDATE CASCADE ON DELETE RESTRICT',
+  )
+
+  // 2. Indexes
+  assert.ok(
+    sql.includes('create index if not exists assignments_owner_status_idx') &&
+      sql.includes('on public.assignments(owner_id, status)'),
+    'Migration must create index on assignments(owner_id, status)',
+  )
+  assert.ok(
+    sql.includes('create index if not exists assignments_course_id_idx') &&
+      sql.includes('on public.assignments(course_id)'),
+    'Migration must create index on assignments(course_id)',
+  )
+})
+
+test('AssignmentFilters and emptyAssignmentFilters contract', () => {
+  assert.equal(emptyAssignmentFilters.query, '')
+  assert.equal(emptyAssignmentFilters.status, 'all')
+  assert.equal(emptyAssignmentFilters.courseId, 'all')
+
+  const validFilters: AssignmentFilters = {
+    query: 'сеть',
+    status: 'in_progress',
+    courseId: 'c1',
+  }
+  assert.equal(validFilters.query, 'сеть')
+  assert.equal(validFilters.status, 'in_progress')
+  assert.equal(validFilters.courseId, 'c1')
+})
+
+test('Embedded resource select query and fromRow relation mapping', () => {
+  // 1. assignmentColumns includes courses(id, name)
+  assert.ok(
+    assignmentColumns.includes('courses(id, name)'),
+    'assignmentColumns must embed courses(id, name)',
+  )
+
+  // 2. fromRow maps embedded courses object to courseTitle
+  const rowWithEmbeddedObject: AssignmentRow = {
+    id: 'a1',
+    owner_id: 'u1',
+    course_id: 'c1',
+    title: 'Задание 1',
+    description: 'Описание',
+    status: 'todo',
+    due_date: '2026-11-20',
+    difficulty: 'easy',
+    created_at: '2026-11-02T10:00:00Z',
+    courses: { id: 'c1', name: 'Сетевые технологии' },
+  }
+  const mappedObj = fromRow(rowWithEmbeddedObject)
+  assert.equal(mappedObj.courseTitle, 'Сетевые технологии')
+  assert.equal(mappedObj.courseId, 'c1')
+
+  // 3. fromRow maps embedded courses array (if returned as array by PostgREST)
+  const rowWithEmbeddedArray: AssignmentRow = {
+    ...rowWithEmbeddedObject,
+    courses: [{ id: 'c1', name: 'Сетевые технологии в массиве' }],
+  }
+  const mappedArr = fromRow(rowWithEmbeddedArray)
+  assert.equal(mappedArr.courseTitle, 'Сетевые технологии в массиве')
+
+  // 4. fromRow falls back to fallbackCourses when courses relation is null
+  const rowWithNullRelation: AssignmentRow = {
+    ...rowWithEmbeddedObject,
+    courses: null,
+  }
+  const mappedFallback = fromRow(rowWithNullRelation, COURSES)
+  assert.equal(mappedFallback.courseTitle, 'Веб-разработка')
+
+  // 5. fromRow falls back to course_id when both courses relation and fallbackCourses are missing
+  const mappedIdFallback = fromRow(rowWithNullRelation)
+  assert.equal(mappedIdFallback.courseTitle, 'c1')
+})
+
+test('services/assignments.ts getAssignments applies search query (ilike), status, and courseId filters to PostgREST request', async () => {
+  const originalFrom = supabase.from
+  try {
+    const mockRow: AssignmentRow = {
+      id: 'row-filter-1',
+      owner_id: 'u1',
+      course_id: 'c1',
+      title: 'Изучение протоколов TCP/IP',
+      description: 'Отчёт',
+      status: 'in_progress',
+      due_date: '2026-11-25',
+      difficulty: 'hard',
+      created_at: '2026-11-02T10:00:00Z',
+      courses: { id: 'c1', name: 'Компьютерные сети' },
+    }
+
+    let calledIlikeCol = ''
+    let calledIlikePattern = ''
+    let calledStatusField = ''
+    let calledStatusValue = ''
+    let calledCourseField = ''
+    let calledCourseValue = ''
+    let calledOrderCol = ''
+    let orderAscending: boolean | undefined
+
+    supabase.from = ((table: string) => {
+      assert.equal(table, 'assignments')
+      return {
+        select: (cols: string) => {
+          assert.equal(cols, assignmentColumns)
+          const queryBuilder: {
+            order: (col: string, opts: { ascending: boolean }) => typeof queryBuilder
+            ilike: (col: string, pattern: string) => typeof queryBuilder
+            eq: (field: string, val: string) => typeof queryBuilder
+            overrideTypes: () => Promise<{ data: AssignmentRow[]; error: null }>
+          } = {
+            order: (col: string, opts: { ascending: boolean }) => {
+              calledOrderCol = col
+              orderAscending = opts.ascending
+              return queryBuilder
+            },
+            ilike: (col: string, pattern: string) => {
+              calledIlikeCol = col
+              calledIlikePattern = pattern
+              return queryBuilder
+            },
+            eq: (field: string, val: string) => {
+              if (field === 'status') {
+                calledStatusField = field
+                calledStatusValue = val
+              } else if (field === 'course_id') {
+                calledCourseField = field
+                calledCourseValue = val
+              }
+              return queryBuilder
+            },
+            overrideTypes: () => Promise.resolve({ data: [mockRow], error: null }),
+          }
+          return queryBuilder
+        },
+      }
+    }) as unknown as typeof supabase.from
+
+    // 1. Query with all filters active
+    const activeFilters: AssignmentFilters = {
+      query: '  протоколов  ',
+      status: 'in_progress',
+      courseId: 'c1',
+    }
+    const result = await getAssignments(activeFilters)
+    assert.equal(calledOrderCol, 'created_at')
+    assert.equal(orderAscending, false)
+    assert.equal(calledIlikeCol, 'title')
+    assert.equal(calledIlikePattern, '%протоколов%')
+    assert.equal(calledStatusField, 'status')
+    assert.equal(calledStatusValue, 'in_progress')
+    assert.equal(calledCourseField, 'course_id')
+    assert.equal(calledCourseValue, 'c1')
+    assert.equal(result.length, 1)
+    assert.equal(result[0].courseTitle, 'Компьютерные сети')
+
+    // 2. Query with empty filters doesn't apply ilike or eq
+    calledIlikeCol = ''
+    calledStatusField = ''
+    calledCourseField = ''
+
+    await getAssignments(emptyAssignmentFilters)
+    assert.equal(calledIlikeCol, '', 'Empty query must not call ilike')
+    assert.equal(calledStatusField, '', 'Status "all" must not call eq')
+    assert.equal(calledCourseField, '', 'CourseId "all" must not call eq')
+  } finally {
+    supabase.from = originalFrom
+  }
+})
+
+test('Empty states distinction logic and component contracts', () => {
+  const rootDir = path.resolve(__dirname, '..')
+
+  // 1. hasFilters calculation logic
+  const computeHasFilters = (filters: AssignmentFilters): boolean => {
+    return (
+      filters.query.trim() !== '' ||
+      filters.status !== 'all' ||
+      filters.courseId !== 'all'
+    )
+  }
+
+  assert.equal(computeHasFilters(emptyAssignmentFilters), false, 'Empty filters have no filters')
+  assert.equal(computeHasFilters({ query: '   ', status: 'all', courseId: 'all' }), false, 'Whitespace query has no filters')
+  assert.equal(computeHasFilters({ query: 'лаба', status: 'all', courseId: 'all' }), true, 'Query triggers hasFilters')
+  assert.equal(computeHasFilters({ query: '', status: 'todo', courseId: 'all' }), true, 'Status triggers hasFilters')
+  assert.equal(computeHasFilters({ query: '', status: 'all', courseId: 'c1' }), true, 'CourseId triggers hasFilters')
+
+  // 2. AssignmentFiltersForm.tsx contract
+  const formPath = path.resolve(rootDir, 'src', 'components', 'AssignmentFiltersForm.tsx')
+  assert.ok(fs.existsSync(formPath), 'AssignmentFiltersForm.tsx must exist')
+  const formSrc = fs.readFileSync(formPath, 'utf8')
+
+  assert.ok(
+    formSrc.includes('id="filter-query"') && formSrc.includes('Поиск по названию'),
+    'AssignmentFiltersForm must render query search input with label',
+  )
+  assert.ok(
+    formSrc.includes('id="filter-status"') && formSrc.includes('Все статусы'),
+    'AssignmentFiltersForm must render status filter with "Все статусы"',
+  )
+  assert.ok(
+    formSrc.includes('id="filter-course"') && formSrc.includes('Все курсы'),
+    'AssignmentFiltersForm must render course filter with "Все курсы"',
+  )
+  assert.ok(
+    formSrc.includes('Применить') && formSrc.includes('type="submit"'),
+    'AssignmentFiltersForm must have "Применить" submit button',
+  )
+  assert.ok(
+    formSrc.includes('Сбросить') && formSrc.includes('emptyAssignmentFilters'),
+    'AssignmentFiltersForm must have "Сбросить" button using emptyAssignmentFilters',
+  )
+  assert.ok(
+    formSrc.includes('disabled={pending}'),
+    'AssignmentFiltersForm must disable buttons and fields during pending',
+  )
+
+  // 3. AssignmentsPage.tsx empty states distinction
+  const pagePath = path.resolve(rootDir, 'src', 'pages', 'AssignmentsPage.tsx')
+  assert.ok(fs.existsSync(pagePath), 'AssignmentsPage.tsx must exist')
+  const pageSrc = fs.readFileSync(pagePath, 'utf8')
+
+  assert.ok(
+    pageSrc.includes('empty-search-state') &&
+      pageSrc.includes('По заданным фильтрам ничего не найдено'),
+    'AssignmentsPage must render empty-search-state when hasFilters is true and assignments are empty',
+  )
+  assert.ok(
+    pageSrc.includes('empty-list-state') &&
+      pageSrc.includes('У вас пока нет учебных заданий'),
+    'AssignmentsPage must render empty-list-state when hasFilters is false and assignments are empty',
+  )
+  assert.ok(
+    pageSrc.includes('hasFilters') && pageSrc.includes('emptyAssignmentFilters'),
+    'AssignmentsPage must use hasFilters and emptyAssignmentFilters',
+  )
+})
+
+test('services/assignments.ts getAssignment queries single row with embedded courses and handles errors', async () => {
+  const originalFrom = supabase.from
+  try {
+    const mockRow: AssignmentRow = {
+      id: 'single-uuid-1',
+      owner_id: 'usr-1',
+      course_id: 'c2',
+      title: 'Проектирование схемы БД',
+      description: 'ER-диаграмма и нормализация',
+      status: 'in_progress',
+      due_date: '2026-11-28',
+      difficulty: 'medium',
+      created_at: '2026-11-02T10:00:00Z',
+      courses: { id: 'c2', name: 'Базы данных' },
+    }
+
+    let calledTable = ''
+    let calledSelect = ''
+    let calledEqField = ''
+    let calledEqValue = ''
+    let singleCalled = false
+
+    supabase.from = ((table: string) => {
+      calledTable = table
+      return {
+        select: (cols: string) => {
+          calledSelect = cols
+          return {
+            eq: (field: string, val: string) => {
+              calledEqField = field
+              calledEqValue = val
+              return {
+                single: () => {
+                  singleCalled = true
+                  return {
+                    overrideTypes: () => Promise.resolve({ data: mockRow, error: null }),
+                  }
+                },
+              }
+            },
+          }
+        },
+      }
+    }) as unknown as typeof supabase.from
+
+    const result = await getAssignment('single-uuid-1')
+    assert.equal(calledTable, 'assignments')
+    assert.equal(calledSelect, assignmentColumns)
+    assert.equal(calledEqField, 'id')
+    assert.equal(calledEqValue, 'single-uuid-1')
+    assert.equal(singleCalled, true)
+    assert.equal(result.id, 'single-uuid-1')
+    assert.equal(result.courseTitle, 'Базы данных')
+
+    // Error handling
+    supabase.from = (() => ({
+      select: () => ({
+        eq: () => ({
+          single: () => ({
+            overrideTypes: () =>
+              Promise.resolve({ data: null, error: { message: 'Row not found' } }),
+          }),
+        }),
+      }),
+    })) as unknown as typeof supabase.from
+
+    await assert.rejects(
+      async () => {
+        await getAssignment('non-existent')
+      },
+      (err: Error) => {
+        assert.ok(err.message.includes('Не удалось загрузить задачу: Row not found'))
+        return true
+      },
+    )
+  } finally {
+    supabase.from = originalFrom
+  }
+})
+
+test('AssignmentFiltersForm handleReset calls either onReset or onApply, avoiding duplicate parallel network requests', () => {
+  const rootDir = path.resolve(__dirname, '..')
+  const formPath = path.resolve(rootDir, 'src', 'components', 'AssignmentFiltersForm.tsx')
+  const formSrc = fs.readFileSync(formPath, 'utf8')
+
+  assert.ok(
+    formSrc.includes('if (onReset)') && formSrc.includes('onReset()') && formSrc.includes('onApply(emptyAssignmentFilters)'),
+    'AssignmentFiltersForm handleReset must call onReset or onApply exclusively to avoid duplicate network requests',
+  )
+})
+
+test('AssignmentsPage keeps AssignmentFiltersForm mounted during loading and error states and passes pending', () => {
+  const rootDir = path.resolve(__dirname, '..')
+  const pagePath = path.resolve(rootDir, 'src', 'pages', 'AssignmentsPage.tsx')
+  const pageSrc = fs.readFileSync(pagePath, 'utf8')
+
+  assert.ok(
+    pageSrc.includes('<AssignmentFiltersForm') &&
+      pageSrc.includes('pending={loading}') &&
+      pageSrc.includes('onApply={onApplyFilters}') &&
+      pageSrc.includes('onReset={onResetFilters}'),
+    'AssignmentsPage must render AssignmentFiltersForm with pending={loading}',
+  )
+})
+
+test('App handleCreateAssignment and handleUpdateAssignment prevent false 404 when filters are active', () => {
+  const rootDir = path.resolve(__dirname, '..')
+  const appPath = path.resolve(rootDir, 'src', 'App.tsx')
+  const appSrc = fs.readFileSync(appPath, 'utf8')
+
+  assert.ok(
+    appSrc.includes('handleCreateAssignment') &&
+      appSrc.includes('setAppliedFilters(emptyAssignmentFilters)') &&
+      appSrc.includes('getAssignments(emptyAssignmentFilters, courses)'),
+    'handleCreateAssignment must reset appliedFilters to empty so newly created assignment is visible and detail page does not 404',
+  )
+
+  assert.ok(
+    appSrc.includes('handleUpdateAssignment') &&
+      appSrc.includes('!fresh.some((a) => a.id === id)') &&
+      appSrc.includes('setAppliedFilters(emptyAssignmentFilters)'),
+    'handleUpdateAssignment must reset filters if updated item is no longer included in filtered results',
+  )
+})
+
+
 
 

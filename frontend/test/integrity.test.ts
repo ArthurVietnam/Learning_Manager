@@ -1778,6 +1778,165 @@ test('App handleCreateAssignment and handleUpdateAssignment prevent false 404 wh
   )
 })
 
+test('Lab 8: frontend/.env.example specifies VITE_API_BASE_URL', () => {
+  const rootDir = path.resolve(__dirname, '..')
+  const envExamplePath = path.resolve(rootDir, '.env.example')
+  const content = fs.readFileSync(envExamplePath, 'utf8')
+  assert.ok(content.includes('VITE_API_BASE_URL='), '.env.example must define VITE_API_BASE_URL')
+})
+
+test('Lab 8: getTaskSummary service sends only status and dueDate and returns calculated data', async () => {
+  const { getTaskSummary } = await import('../src/services/summary.ts')
+  const originalFetch = globalThis.fetch
+
+  let calledUrl = ''
+  let calledOptions: RequestInit | undefined
+
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calledUrl = String(input)
+      calledOptions = init
+      return new Response(
+        JSON.stringify({
+          data: {
+            active: 3,
+            completed: 2,
+            overdue: 1,
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      )
+    }) as typeof fetch
+
+    const sampleAssignments: Assignment[] = [
+      {
+        id: '1',
+        title: 'Задание 1',
+        description: 'Секретное описание',
+        courseId: 'c1',
+        courseTitle: 'Базы данных',
+        status: 'todo',
+        difficulty: 'easy',
+        dueDate: '2026-10-15',
+      },
+    ]
+
+    const result = await getTaskSummary(sampleAssignments, 'http://test-host:3000/')
+    assert.equal(calledUrl, 'http://test-host:3000/api/summary/tasks')
+    assert.equal(calledOptions?.method, 'POST')
+    assert.deepEqual(calledOptions?.headers, { 'Content-Type': 'application/json' })
+
+    const parsedBody = JSON.parse(String(calledOptions?.body))
+    assert.deepEqual(parsedBody, {
+      items: [{ status: 'todo', dueDate: '2026-10-15' }],
+    })
+    // Ensure no sensitive or unnecessary fields are sent
+    assert.equal('id' in parsedBody.items[0], false)
+    assert.equal('title' in parsedBody.items[0], false)
+    assert.equal('description' in parsedBody.items[0], false)
+    assert.equal('courseId' in parsedBody.items[0], false)
+
+    assert.deepEqual(result, { active: 3, completed: 2, overdue: 1 })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Lab 8: getTaskSummary service properly handles API errors and network failures', async () => {
+  const { getTaskSummary } = await import('../src/services/summary.ts')
+  const originalFetch = globalThis.fetch
+
+  try {
+    // 1. API error response
+    globalThis.fetch = (async () => {
+      return new Response(
+        JSON.stringify({
+          error: { code: 'VALIDATION_ERROR', message: 'Проверьте поля элементов' },
+        }),
+        {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      )
+    }) as typeof fetch
+
+    await assert.rejects(
+      async () => {
+        await getTaskSummary([])
+      },
+      (err: Error) => {
+        assert.equal(err.message, 'Проверьте поля элементов')
+        return true
+      },
+    )
+
+    // 2. Network offline failure
+    globalThis.fetch = (async () => {
+      throw new TypeError('Failed to fetch')
+    }) as typeof fetch
+
+    await assert.rejects(
+      async () => {
+        await getTaskSummary([])
+      },
+      (err: Error) => {
+        assert.ok(err.message.includes('Node API недоступен'))
+        assert.ok(err.message.includes('Failed to fetch'))
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Lab 8: AssignmentsPage contains Node API summary widget with 3 states, retry, and stale handling', () => {
+  const rootDir = path.resolve(__dirname, '..')
+  const pagePath = path.resolve(rootDir, 'src', 'pages', 'AssignmentsPage.tsx')
+  const pageSrc = fs.readFileSync(pagePath, 'utf8')
+
+  assert.ok(pageSrc.includes('summary-widget'), 'Must contain summary-widget')
+  assert.ok(pageSrc.includes('Рассчитать сводку (Node API)'), 'Must contain initial calculation button')
+  assert.ok(pageSrc.includes('summary-pending'), 'Must handle pending state')
+  assert.ok(pageSrc.includes('summary-error'), 'Must handle error state')
+  assert.ok(pageSrc.includes('summary-stale-banner'), 'Must contain stale banner')
+  assert.ok(pageSrc.includes('Пересчитать'), 'Must contain recalculate button')
+  assert.ok(pageSrc.includes('getTaskSummary'), 'Must call getTaskSummary')
+})
+
+test('Lab 8: Backend structure, config, scripts, and exports conform to specification', () => {
+  const rootDir = path.resolve(__dirname, '../..')
+  const pkgPath = path.resolve(rootDir, 'backend/package.json')
+  const tsconfigPath = path.resolve(rootDir, 'backend/tsconfig.json')
+  const indexPath = path.resolve(rootDir, 'backend/src/index.ts')
+  const summaryPath = path.resolve(rootDir, 'backend/src/summary.ts')
+  const testPath = path.resolve(rootDir, 'backend/src/summary.test.ts')
+
+  assert.ok(fs.existsSync(pkgPath), 'backend/package.json must exist')
+  assert.ok(fs.existsSync(tsconfigPath), 'backend/tsconfig.json must exist')
+  assert.ok(fs.existsSync(indexPath), 'backend/src/index.ts must exist')
+  assert.ok(fs.existsSync(summaryPath), 'backend/src/summary.ts must exist')
+  assert.ok(fs.existsSync(testPath), 'backend/src/summary.test.ts must exist')
+
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
+  assert.equal(pkg.type, 'module')
+  assert.ok(pkg.scripts?.dev)
+  assert.ok(pkg.scripts?.typecheck)
+  assert.ok(pkg.scripts?.build)
+  assert.ok(pkg.scripts?.start)
+  assert.ok(pkg.scripts?.test)
+  assert.ok(pkg.dependencies?.express)
+  assert.ok(pkg.dependencies?.cors)
+
+  const indexSrc = fs.readFileSync(indexPath, 'utf8')
+  assert.ok(indexSrc.includes('/api/health'), 'index.ts must have /api/health')
+  assert.ok(indexSrc.includes('/api/summary/:kind'), 'index.ts must have /api/summary/:kind')
+  assert.ok(indexSrc.includes('export { app }'), 'index.ts must export app')
+})
+
 
 
 

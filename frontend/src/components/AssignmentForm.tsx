@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
+import { Link } from 'react-router'
 import type { AssignmentDraft } from '../types/assignment.ts'
 import {
   isValidAssignmentStatus,
@@ -7,6 +8,7 @@ import {
   validateAssignmentDraft,
 } from '../types/assignment.ts'
 import { useCourses } from '../hooks/useCourses.ts'
+import { ApiError } from '../services/api.ts'
 
 export interface AssignmentFormProps {
   initialValues: AssignmentDraft
@@ -18,6 +20,8 @@ export function AssignmentForm(props: AssignmentFormProps) {
   const [draft, setDraft] = useState<AssignmentDraft>(() => ({ ...props.initialValues }))
   const [error, setError] = useState<string>('')
   const [submitError, setSubmitError] = useState<string>('')
+  const [isAuthExpired, setIsAuthExpired] = useState<boolean>(false)
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const [pending, setPending] = useState<boolean>(false)
   const { load, retry } = useCourses()
 
@@ -56,6 +60,8 @@ export function AssignmentForm(props: AssignmentFormProps) {
 
     setError('')
     setSubmitError('')
+    setIsAuthExpired(false)
+    setFieldErrors({})
 
     try {
       setPending(true)
@@ -66,9 +72,26 @@ export function AssignmentForm(props: AssignmentFormProps) {
         courseTitle,
       })
     } catch (err: unknown) {
-      setSubmitError(
-        err instanceof Error ? err.message : 'Не удалось сохранить запись.',
-      )
+      if (err instanceof ApiError) {
+        if (err.status === 401) {
+          setIsAuthExpired(true)
+          setSubmitError(
+            err.message || 'Сессия истекла или недействительна. Пожалуйста, выполните вход снова.',
+          )
+        } else if (err.status === 400 && err.error?.fields) {
+          setFieldErrors(err.error.fields)
+          setSubmitError(err.message || 'Ошибка валидации полей')
+        } else {
+          setSubmitError(err.message)
+        }
+      } else if (err instanceof Error) {
+        if (err.message.includes('Сессия истекла') || err.message.includes('401')) {
+          setIsAuthExpired(true)
+        }
+        setSubmitError(err.message)
+      } else {
+        setSubmitError('Не удалось сохранить запись.')
+      }
     } finally {
       setPending(false)
     }
@@ -90,6 +113,11 @@ export function AssignmentForm(props: AssignmentFormProps) {
           onChange={(e) => setDraft({ ...draft, title: e.target.value })}
           placeholder="Например, Лабораторная работа 6"
         />
+        {fieldErrors.title && (
+          <p role="alert" className="form-feedback-error">
+            {fieldErrors.title}
+          </p>
+        )}
       </div>
 
       <div className="form-row form-row-2">
@@ -171,6 +199,12 @@ export function AssignmentForm(props: AssignmentFormProps) {
             </div>
           )}
 
+          {fieldErrors.courseId && (
+            <p role="alert" className="form-feedback-error">
+              {fieldErrors.courseId}
+            </p>
+          )}
+
           {load.status === 'success' &&
             courses.length > 0 &&
             draft.courseId !== '' &&
@@ -194,6 +228,11 @@ export function AssignmentForm(props: AssignmentFormProps) {
             disabled={pending}
             onChange={(e) => setDraft({ ...draft, dueDate: e.target.value })}
           />
+          {fieldErrors.dueDate && (
+            <p role="alert" className="form-feedback-error">
+              {fieldErrors.dueDate}
+            </p>
+          )}
         </div>
       </div>
 
@@ -256,6 +295,11 @@ export function AssignmentForm(props: AssignmentFormProps) {
           onChange={(e) => setDraft({ ...draft, description: e.target.value })}
           placeholder="Подробное описание требований или результатов выполнения..."
         />
+        {fieldErrors.description && (
+          <p role="alert" className="form-feedback-error">
+            {fieldErrors.description}
+          </p>
+        )}
       </div>
 
       {error && (
@@ -264,10 +308,23 @@ export function AssignmentForm(props: AssignmentFormProps) {
         </p>
       )}
 
-      {submitError && (
-        <p className="form-error" role="alert">
-          {submitError}
-        </p>
+      {isAuthExpired ? (
+        <div className="form-error form-error-auth" role="alert">
+          <p style={{ margin: 0 }}>
+            {submitError || 'Сессия истекла или недействительна. Черновик сохранён в форме.'}
+          </p>
+          <div style={{ marginTop: '8px' }}>
+            <Link to="/auth" className="button button-primary button-sm">
+              Войти снова
+            </Link>
+          </div>
+        </div>
+      ) : (
+        submitError && (
+          <p className="form-error" role="alert">
+            {submitError}
+          </p>
+        )
       )}
 
       <div className="form-actions">

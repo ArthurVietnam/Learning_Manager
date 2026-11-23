@@ -1,20 +1,27 @@
 import express, { type Request, type Response, type NextFunction } from 'express'
 import cors from 'cors'
 import {
-  parseSummaryBody,
+  parseCreateTask,
+  parseDateRange,
+  loadAllTasksForSummary,
   calculateTaskSummary,
+  mapSupabaseError,
   HttpError,
 } from './summary.js'
+import { requireUser, createUserClient, verifyEnvAtStartup } from './auth.js'
 
 const app = express()
 const port = Number(process.env.PORT ?? 3000)
-const frontendOrigin = (process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173').replace(/\/+$/, '')
+const frontendOrigin = (process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173').replace(
+  /\/+$/,
+  '',
+)
 
 app.use(
   cors({
     origin: frontendOrigin,
-    methods: ['GET', 'POST'],
-    allowedHeaders: ['Content-Type'],
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   }),
 )
 
@@ -47,22 +54,70 @@ app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
   next(err)
 })
 
-app.get('/api/health', (_request, response) => {
+// Public health check
+app.get('/api/health', (_request: Request, response: Response) => {
   response.status(200).json({ status: 'ok' })
 })
 
-app.post('/api/summary/:kind', (request, response) => {
-  if (request.params.kind !== 'tasks' && request.params.kind !== 'assignments') {
-    throw new HttpError(404, 'NOT_FOUND', 'Вид сводки не найден')
-  }
-  const items = parseSummaryBody(request.body)
-  const today = new Date().toISOString().slice(0, 10)
-  const data = calculateTaskSummary(items, today)
-  response.status(200).json({ data })
-})
+// Lab 9: removed temporary POST /api/summary/:kind from Lab 8 in favor of authorized GET /api/summary
+
+// POST /api/tasks and /api/assignments (create task via Node API with user context)
+app.post(
+  ['/api/tasks', '/api/assignments'],
+  requireUser,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const input = parseCreateTask(req.body)
+      const { token, userId } = res.locals.auth
+      const supabase = createUserClient(token)
+
+      const { data, error } = await supabase
+        .from('assignments')
+        .insert({
+          owner_id: userId,
+          course_id: input.courseId,
+          title: input.title,
+          description: input.description,
+          status: input.status,
+          due_date: input.dueDate,
+          difficulty: input.difficulty,
+        })
+        .select(
+          'id, owner_id, course_id, title, description, status, due_date, difficulty, created_at, courses(id, name)',
+        )
+        .single()
+
+      if (error) {
+        throw mapSupabaseError(error)
+      }
+
+      res.status(201).json({ data })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// GET /api/summary (load tasks from DB scoped to user and compute metrics on server)
+app.get(
+  '/api/summary',
+  requireUser,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const range = parseDateRange(req.query)
+      const { token } = res.locals.auth
+      const supabase = createUserClient(token)
+      const items = await loadAllTasksForSummary(supabase, range)
+      const data = calculateTaskSummary(items, range.today)
+      res.status(200).json({ data })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
 
 // 404 handler for unknown routes
-app.use((_request, response) => {
+app.use((_request: Request, response: Response) => {
   response.status(404).json({
     error: { code: 'NOT_FOUND', message: 'Маршрут не найден' },
   })
@@ -79,7 +134,13 @@ app.use(
   ) => {
     if (error instanceof HttpError) {
       return response.status(error.status).json({
-        error: { code: error.code, message: error.message },
+        error: {
+          code: error.code,
+          message: error.message,
+          ...(error.fields && Object.keys(error.fields).length > 0
+            ? { fields: error.fields }
+            : {}),
+        },
       })
     }
     if (
@@ -113,11 +174,13 @@ app.use(
 )
 
 export { app }
+export { port, frontendOrigin }
 
 const isMain =
   process.argv[1] &&
   (process.argv[1].endsWith('index.ts') || process.argv[1].endsWith('index.js'))
 
 if (isMain && process.env.NODE_ENV !== 'test') {
+  verifyEnvAtStartup()
   app.listen(port, () => console.log(`API: http://localhost:${port}`))
 }

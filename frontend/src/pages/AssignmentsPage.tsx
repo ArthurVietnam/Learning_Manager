@@ -11,7 +11,7 @@ import {
 import type { Course } from '../types/course.ts'
 import { AssignmentCard } from '../components/AssignmentCard.tsx'
 import { AssignmentFiltersForm } from '../components/AssignmentFiltersForm.tsx'
-import { getTaskSummary, type TaskSummary, API_BASE_URL } from '../services/summary.ts'
+import { getTaskSummary, type TaskSummary, API_BASE_URL, ApiError } from '../services/summary.ts'
 
 export interface AssignmentsPageProps {
   assignments: Assignment[]
@@ -22,6 +22,7 @@ export interface AssignmentsPageProps {
   onApplyFilters?: (filters: AssignmentFilters) => void
   onResetFilters?: () => void
   onRetry?: () => void
+  accessToken?: string
 }
 
 export function AssignmentsPage({
@@ -33,6 +34,7 @@ export function AssignmentsPage({
   onApplyFilters = () => {},
   onResetFilters = () => {},
   onRetry,
+  accessToken,
 }: AssignmentsPageProps) {
   const hasFilters =
     filters.query.trim() !== '' ||
@@ -47,6 +49,7 @@ export function AssignmentsPage({
   >('idle')
   const [summary, setSummary] = useState<TaskSummary | null>(null)
   const [summaryError, setSummaryError] = useState<string | null>(null)
+  const [isAuthExpired, setIsAuthExpired] = useState<boolean>(false)
   const [isStale, setIsStale] = useState<boolean>(false)
   const lastCalculatedSnapshotRef = useRef<string | null>(null)
 
@@ -62,15 +65,29 @@ export function AssignmentsPage({
     }
   }, [assignments, summaryStatus])
 
+  // Reset summary state when user changes (accessToken changes)
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
+    setSummaryStatus('idle')
+    // oxlint-disable-next-line react/set-state-in-effect
+    setSummary(null)
+    setSummaryError(null)
+    setIsAuthExpired(false)
+    setIsStale(false)
+    lastCalculatedSnapshotRef.current = null
+  }, [accessToken])
+
   async function handleCalculateSummary() {
     setSummaryStatus('pending')
     setSummaryError(null)
+    setIsAuthExpired(false)
     const currentList = assignments
     const currentSnapshot = currentList
       .map((a) => `${a.id}:${a.status}:${a.dueDate}`)
       .join('|')
     try {
-      const result = await getTaskSummary(currentList)
+      const token = accessToken ?? ''
+      const result = await getTaskSummary({}, token)
       setSummary(result)
       setSummaryStatus('success')
       lastCalculatedSnapshotRef.current = currentSnapshot
@@ -80,9 +97,16 @@ export function AssignmentsPage({
       setIsStale(currentSnapshot !== latestSnapshot)
     } catch (err: unknown) {
       setSummaryStatus('error')
-      setSummaryError(
-        err instanceof Error ? err.message : 'Не удалось получить сводку от Node API.',
-      )
+      if (err instanceof ApiError && err.status === 401) {
+        setIsAuthExpired(true)
+        setSummaryError(
+          'Сессия истекла или недействительна. Пожалуйста, выполните вход снова.',
+        )
+      } else {
+        setSummaryError(
+          err instanceof Error ? err.message : 'Не удалось получить сводку от Node API.',
+        )
+      }
     }
   }
 
@@ -157,22 +181,34 @@ export function AssignmentsPage({
           <div className="summary-state summary-error" role="alert">
             <div className="summary-error-content">
               <strong className="summary-error-title">
-                Ошибка обращения к Node API
+                {isAuthExpired ? 'Сессия истекла' : 'Ошибка обращения к Node API'}
               </strong>
               <p className="summary-error-message">{summaryError}</p>
-              <p className="summary-error-notice">
-                Сервер Node API недоступен ({API_BASE_URL}). Убедитесь, что backend запущен.
-                При этом CRUD-операции и хранилище Supabase остаются полностью работоспособными.
-              </p>
+              {isAuthExpired ? (
+                <p className="summary-error-notice">
+                  Срок действия вашего токена доступа истёк. Для обновления данных сводки выполните вход снова.
+                </p>
+              ) : (
+                <p className="summary-error-notice">
+                  Сервер Node API недоступен ({API_BASE_URL}). Убедитесь, что backend запущен.
+                  При этом CRUD-операции и хранилище Supabase остаются полностью работоспособными.
+                </p>
+              )}
             </div>
-            <button
-              type="button"
-              className="button button-secondary button-sm"
-              onClick={handleCalculateSummary}
-              disabled={loading}
-            >
-              Повторить
-            </button>
+            {isAuthExpired ? (
+              <Link to="/auth" className="button button-primary button-sm">
+                Войти снова
+              </Link>
+            ) : (
+              <button
+                type="button"
+                className="button button-secondary button-sm"
+                onClick={handleCalculateSummary}
+                disabled={loading}
+              >
+                Повторить
+              </button>
+            )}
           </div>
         )}
 

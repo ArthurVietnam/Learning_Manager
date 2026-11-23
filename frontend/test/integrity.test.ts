@@ -1937,6 +1937,207 @@ test('Lab 8: Backend structure, config, scripts, and exports conform to specific
   assert.ok(indexSrc.includes('export { app }'), 'index.ts must export app')
 })
 
+test('Lab 9: apiFetch attaches Bearer token, parses response, and formats 401 error', async () => {
+  const { apiFetch, ApiError } = await import('../src/services/api.ts')
+  const originalFetch = globalThis.fetch
+
+  let calledUrl = ''
+  let calledOptions: RequestInit | undefined
+
+  try {
+    // 1. Success response
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calledUrl = String(input)
+      calledOptions = init
+      return new Response(
+        JSON.stringify({ data: { hello: 'world' } }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as typeof fetch
+
+    const res = await apiFetch<{ hello: string }>('/api/test', 'secret-jwt-token')
+    assert.deepEqual(res, { hello: 'world' })
+    assert.ok(calledUrl.endsWith('/api/test'))
+    const headers = calledOptions?.headers as Record<string, string>
+    assert.equal(headers['Authorization'], 'Bearer secret-jwt-token')
+
+    // 2. 401 Unauthorized response
+    globalThis.fetch = (async () => {
+      return new Response(
+        JSON.stringify({
+          error: { code: 'UNAUTHORIZED', message: 'Сессия недействительна' },
+        }),
+        { status: 401, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as typeof fetch
+
+    await assert.rejects(
+      async () => {
+        await apiFetch('/api/protected', 'expired-token')
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof ApiError)
+        assert.equal(err.status, 401)
+        assert.ok(err.message.includes('Сессия истекла'))
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Lab 9: createAssignmentViaApi sends POST /api/tasks with Authorization and maps created record', async () => {
+  const { createAssignmentViaApi, createTaskViaApi } = await import(
+    '../src/services/assignments.ts'
+  )
+  const originalFetch = globalThis.fetch
+
+  let calledMethod = ''
+  let calledUrl = ''
+  let calledHeaders: Record<string, string> = {}
+  let calledBody: any = null
+
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calledUrl = String(input)
+      calledMethod = init?.method ?? ''
+      calledHeaders = (init?.headers ?? {}) as Record<string, string>
+      calledBody = JSON.parse(String(init?.body))
+      return new Response(
+        JSON.stringify({
+          data: {
+            id: 'uuid-1234',
+            owner_id: 'user-alice',
+            course_id: 'c1',
+            title: calledBody.title,
+            description: calledBody.description,
+            status: calledBody.status,
+            due_date: calledBody.dueDate,
+            difficulty: calledBody.difficulty,
+            created_at: '2026-11-23T12:00:00Z',
+            courses: { id: 'c1', name: 'Базы данных' },
+          },
+        }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as typeof fetch
+
+    const draft = {
+      courseId: 'c1',
+      title: 'Лабораторная работа 9',
+      description: 'Маршрут через Node API',
+      status: 'todo' as const,
+      dueDate: '2026-11-28',
+      difficulty: 'medium' as const,
+    }
+
+    const created = await createAssignmentViaApi(draft, 'alice-valid-token')
+    assert.equal(calledMethod, 'POST')
+    assert.ok(calledUrl.endsWith('/api/tasks'))
+    assert.equal(calledHeaders['Authorization'], 'Bearer alice-valid-token')
+    assert.equal(calledBody.title, 'Лабораторная работа 9')
+    assert.equal(calledBody.courseId, 'c1')
+    assert.equal('owner_id' in calledBody, false)
+    assert.equal('id' in calledBody, false)
+
+    assert.equal(created.id, 'uuid-1234')
+    assert.equal(created.title, 'Лабораторная работа 9')
+    assert.equal(created.courseTitle, 'Базы данных')
+    assert.equal(typeof createTaskViaApi, 'function')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Lab 9: getTaskSummaryApi calls GET /api/summary with date range query and auth token', async () => {
+  const { getTaskSummaryApi } = await import('../src/services/summary.ts')
+  const originalFetch = globalThis.fetch
+
+  let calledUrl = ''
+  let calledHeaders: Record<string, string> = {}
+
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calledUrl = String(input)
+      calledHeaders = (init?.headers ?? {}) as Record<string, string>
+      return new Response(
+        JSON.stringify({
+          data: {
+            active: 4,
+            completed: 2,
+            overdue: 1,
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as typeof fetch
+
+    const summary = await getTaskSummaryApi(
+      { from: '2026-09-01', to: '2026-12-31' },
+      'user-valid-token',
+    )
+
+    assert.ok(calledUrl.includes('/api/summary?from=2026-09-01&to=2026-12-31'))
+    assert.equal(calledHeaders['Authorization'], 'Bearer user-valid-token')
+    assert.deepEqual(summary, { active: 4, completed: 2, overdue: 1 })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Lab 9: Backend integration contract, auth middleware, and env templates', () => {
+  const rootDir = path.resolve(__dirname, '../..')
+  const authPath = path.resolve(rootDir, 'backend/src/auth.ts')
+  const envExamplePath = path.resolve(rootDir, 'backend/.env.example')
+  const indexPath = path.resolve(rootDir, 'backend/src/index.ts')
+
+  assert.ok(fs.existsSync(authPath), 'backend/src/auth.ts must exist')
+  assert.ok(fs.existsSync(envExamplePath), 'backend/.env.example must exist')
+
+  const envExample = fs.readFileSync(envExamplePath, 'utf8')
+  assert.ok(envExample.includes('SUPABASE_URL='), '.env.example must have SUPABASE_URL')
+  assert.ok(envExample.includes('SUPABASE_PUBLISHABLE_KEY='), '.env.example must have SUPABASE_PUBLISHABLE_KEY')
+
+  const authSrc = fs.readFileSync(authPath, 'utf8')
+  assert.ok(authSrc.includes('requireUser'), 'auth.ts must export requireUser')
+  assert.ok(authSrc.includes('createUserClient'), 'auth.ts must export createUserClient')
+
+  const indexSrc = fs.readFileSync(indexPath, 'utf8')
+  assert.ok(
+    indexSrc.includes("['/api/tasks', '/api/assignments']") || indexSrc.includes('/api/tasks'),
+    'index.ts must handle /api/tasks',
+  )
+  assert.ok(indexSrc.includes('/api/summary'), 'index.ts must handle /api/summary')
+  assert.ok(indexSrc.includes('requireUser'), 'index.ts must use requireUser middleware')
+})
+
+test('Lab 9: ApiError supports fields and AssignmentForm handles 401 re-login and 400 field errors', async () => {
+  const { ApiError } = await import('../src/services/api.ts')
+  const err = new ApiError(400, {
+    code: 'VALIDATION_ERROR',
+    message: 'Неверные поля',
+    fields: { title: 'Длина от 3 до 100 символов' },
+  })
+  assert.equal(err.status, 400)
+  assert.equal(err.message, 'Неверные поля')
+  assert.equal(err.error?.fields?.title, 'Длина от 3 до 100 символов')
+
+  // Verify AssignmentForm contract for 401 and 400 handling
+  const rootDir = path.resolve(__dirname, '../..')
+  const formPath = path.resolve(rootDir, 'frontend/src/components/AssignmentForm.tsx')
+  const formSrc = fs.readFileSync(formPath, 'utf8')
+
+  assert.ok(formSrc.includes('isAuthExpired'), 'AssignmentForm must track isAuthExpired')
+  assert.ok(formSrc.includes('/auth'), 'AssignmentForm must offer link to /auth on 401')
+  assert.ok(formSrc.includes('fieldErrors'), 'AssignmentForm must support fieldErrors')
+
+  // Verify AssignmentsPage resets summary on user / token change
+  const pagePath = path.resolve(rootDir, 'frontend/src/pages/AssignmentsPage.tsx')
+  const pageSrc = fs.readFileSync(pagePath, 'utf8')
+  assert.ok(pageSrc.includes('[accessToken]'), 'AssignmentsPage must reset summary when accessToken changes')
+})
+
 
 
 

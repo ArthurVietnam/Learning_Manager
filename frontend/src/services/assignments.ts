@@ -8,6 +8,7 @@ import type {
 import { emptyAssignmentFilters } from '../types/assignment.ts'
 import type { Course } from '../types/course.ts'
 import { supabase } from '../lib/supabase.ts'
+import { apiFetch } from './api.ts'
 
 export type { AssignmentFilters }
 export { emptyAssignmentFilters }
@@ -111,10 +112,38 @@ export async function getAssignment(
   return fromRow(data, courses)
 }
 
-export async function createAssignment(
+export async function createAssignmentViaApi(
   draft: AssignmentDraft,
+  accessToken: string,
   courses?: Course[],
 ): Promise<Assignment> {
+  const row = await apiFetch<AssignmentRow>('/api/tasks', accessToken, {
+    method: 'POST',
+    body: JSON.stringify({
+      courseId: draft.courseId,
+      title: draft.title.trim(),
+      description: draft.description.trim(),
+      status: draft.status,
+      dueDate: draft.dueDate,
+      difficulty: draft.difficulty,
+    }),
+  })
+  return fromRow(row, courses)
+}
+
+// Alias conforming to Lab 9 specification naming (createTaskViaApi)
+export const createTaskViaApi = createAssignmentViaApi
+
+export async function createAssignment(
+  draft: AssignmentDraft,
+  coursesOrToken?: Course[] | string,
+  courses?: Course[],
+): Promise<Assignment> {
+  if (typeof coursesOrToken === 'string') {
+    return createAssignmentViaApi(draft, coursesOrToken, courses)
+  }
+
+  // Fallback to direct Supabase client call when no accessToken string is provided (e.g. Lab 6/7 unit tests)
   const { data, error } = await supabase
     .from('assignments')
     .insert(toWrite(draft))
@@ -123,7 +152,7 @@ export async function createAssignment(
     .overrideTypes<AssignmentRow, { merge: false }>()
 
   if (error) throw new Error(`Не удалось создать задачу: ${error.message}`)
-  return fromRow(data, courses)
+  return fromRow(data, coursesOrToken)
 }
 
 export async function updateAssignment(

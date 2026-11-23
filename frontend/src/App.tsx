@@ -118,7 +118,8 @@ export default function App() {
   }
 
   async function handleCreateAssignment(draft: AssignmentDraft): Promise<string> {
-    const created = await apiCreateAssignment(draft, courses)
+    const token = auth.status === 'authenticated' ? auth.session.access_token : ''
+    const created = await apiCreateAssignment(draft, token, courses)
     setAppliedFilters(emptyAssignmentFilters)
     try {
       const fresh = await getAssignments(emptyAssignmentFilters, courses)
@@ -188,6 +189,11 @@ export default function App() {
                 onApplyFilters={handleApplyFilters}
                 onResetFilters={handleResetFilters}
                 onRetry={() => fetchAssignments(appliedFilters)}
+                accessToken={
+                  auth.status === 'authenticated'
+                    ? auth.session.access_token
+                    : undefined
+                }
               />
             }
           />

@@ -1,4 +1,5 @@
 import type { Assignment } from '../types/assignment.ts'
+import { apiFetch, ApiError, API_BASE_URL } from './api.ts'
 
 export type SummaryTask = {
   status: 'todo' | 'in_progress' | 'done'
@@ -11,57 +12,89 @@ export type TaskSummary = {
   overdue: number
 }
 
-function getEnvApiBaseUrl(): string {
-  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL) {
-    return String(import.meta.env.VITE_API_BASE_URL).trim().replace(/\/+$/, '')
-  }
-  const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
-  if (proc?.env?.VITE_API_BASE_URL) {
-    return String(proc.env.VITE_API_BASE_URL).trim().replace(/\/+$/, '')
-  }
-  return 'http://localhost:3000'
+export type SummaryDateRange = {
+  from?: string
+  to?: string
 }
 
-export const API_BASE_URL = getEnvApiBaseUrl()
+export { API_BASE_URL, ApiError }
 
-export async function getTaskSummary(
-  items: Pick<Assignment, 'status' | 'dueDate'>[],
-  baseUrl: string = API_BASE_URL,
+/**
+ * Lab 9: Server-side summary calculation via GET /api/summary.
+ * Queries Supabase through request-scoped client under user context and returns computed metrics.
+ */
+export async function getTaskSummaryApi(
+  range: SummaryDateRange = {},
+  accessToken: string,
 ): Promise<TaskSummary> {
-  const normalizedBaseUrl = baseUrl.replace(/\/+$/, '')
-  let response: Response
-  try {
-    response = await fetch(`${normalizedBaseUrl}/api/summary/tasks`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        items: items.map(({ status, dueDate }) => ({
-          status,
-          dueDate: dueDate && dueDate.trim() !== '' ? dueDate.trim() : null,
-        })),
-      }),
-    })
-  } catch (err: unknown) {
-    const errorMsg =
-      err instanceof Error ? err.message : 'Ошибка сетевого соединения'
-    throw new Error(
-      `Node API недоступен (${normalizedBaseUrl}): ${errorMsg}. Убедитесь, что backend запущен.`,
-    )
+  const queryParams = new URLSearchParams()
+  if (range.from) queryParams.set('from', range.from)
+  if (range.to) queryParams.set('to', range.to)
+  const queryString = queryParams.toString() ? `?${queryParams.toString()}` : ''
+
+  return apiFetch<TaskSummary>(`/api/summary${queryString}`, accessToken)
+}
+
+/**
+ * Universal summary getter supporting both Lab 9 authorized GET and Lab 8 backward-compatible POST.
+ */
+export async function getTaskSummary(
+  rangeOrItemsOrToken:
+    | SummaryDateRange
+    | Pick<Assignment, 'status' | 'dueDate'>[]
+    | string,
+  tokenOrBaseUrl?: string,
+  _customBaseUrl?: string,
+): Promise<TaskSummary> {
+  // Case 1: Lab 8 legacy call passing items array: getTaskSummary(items, baseUrl?)
+  if (Array.isArray(rangeOrItemsOrToken)) {
+    const items = rangeOrItemsOrToken
+    const baseUrl = (tokenOrBaseUrl || API_BASE_URL).replace(/\/+$/, '')
+    let response: Response
+    try {
+      response = await fetch(`${baseUrl}/api/summary/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: items.map(({ status, dueDate }) => ({
+            status,
+            dueDate: dueDate && dueDate.trim() !== '' ? dueDate.trim() : null,
+          })),
+        }),
+      })
+    } catch (err: unknown) {
+      const errorMsg =
+        err instanceof Error ? err.message : 'Ошибка сетевого соединения'
+      throw new Error(
+        `Node API недоступен (${baseUrl}): ${errorMsg}. Убедитесь, что backend запущен.`,
+      )
+    }
+
+    const payload = (await response.json().catch(() => null)) as
+      | { data?: TaskSummary; error?: { message?: string; code?: string } }
+      | null
+
+    if (!response.ok) {
+      throw new Error(
+        payload?.error?.message ?? `Ошибка API: ${response.status}`,
+      )
+    }
+
+    if (!payload?.data) {
+      throw new Error('Ответ сервера не содержит данных сводки.')
+    }
+
+    return payload.data
   }
 
-  const payload = (await response.json().catch(() => null)) as
-    | { data?: TaskSummary; error?: { message?: string; code?: string } }
-    | null
-
-  if (!response.ok) {
-    throw new Error(
-      payload?.error?.message ?? `Ошибка API: ${response.status}`,
-    )
+  // Case 2: Lab 9 string token shorthand: getTaskSummary(accessToken)
+  if (typeof rangeOrItemsOrToken === 'string') {
+    const accessToken = rangeOrItemsOrToken
+    return getTaskSummaryApi({}, accessToken)
   }
 
-  if (!payload?.data) {
-    throw new Error('Ответ сервера не содержит данных сводки.')
-  }
-
-  return payload.data
+  // Case 3: Lab 9 range object: getTaskSummary({ from, to }, accessToken)
+  const range = rangeOrItemsOrToken ?? {}
+  const accessToken = tokenOrBaseUrl ?? ''
+  return getTaskSummaryApi(range, accessToken)
 }

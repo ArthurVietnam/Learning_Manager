@@ -2138,6 +2138,54 @@ test('Lab 9: ApiError supports fields and AssignmentForm handles 401 re-login an
   assert.ok(pageSrc.includes('[accessToken]'), 'AssignmentsPage must reset summary when accessToken changes')
 })
 
+test('Lab 10: Production deployment artifacts, Nginx templates, and systemd service', () => {
+  const rootDir = path.resolve(__dirname, '../..')
+  const deploymentDocPath = path.resolve(rootDir, 'docs/deployment.md')
+  const nginxSpaPath = path.resolve(rootDir, 'deploy/nginx/course.muntyandev.ru.conf')
+  const nginxApiPath = path.resolve(rootDir, 'deploy/nginx/api-course.muntyandev.ru.conf')
+  const systemdPath = path.resolve(rootDir, 'deploy/systemd/course-api.service')
+  const backendIndexPath = path.resolve(rootDir, 'backend/src/index.ts')
+
+  assert.ok(fs.existsSync(deploymentDocPath), 'docs/deployment.md must exist')
+  assert.ok(fs.existsSync(nginxSpaPath), 'deploy/nginx/course.muntyandev.ru.conf must exist')
+  assert.ok(fs.existsSync(nginxApiPath), 'deploy/nginx/api-course.muntyandev.ru.conf must exist')
+  assert.ok(fs.existsSync(systemdPath), 'deploy/systemd/course-api.service must exist')
+
+  const deploymentDoc = fs.readFileSync(deploymentDocPath, 'utf8')
+  assert.ok(deploymentDoc.includes('course.muntyandev.ru'), 'deployment.md must mention frontend domain')
+  assert.ok(deploymentDoc.includes('api-course.muntyandev.ru'), 'deployment.md must mention backend API domain')
+  assert.ok(deploymentDoc.includes('try_files $uri $uri/ /index.html;'), 'deployment.md must specify SPA fallback')
+  assert.ok(deploymentDoc.includes('proxy_pass http://127.0.0.1:3000;'), 'deployment.md must specify reverse proxy')
+  assert.ok(deploymentDoc.includes('course-api.service'), 'deployment.md must specify systemd service')
+
+  const nginxSpa = fs.readFileSync(nginxSpaPath, 'utf8')
+  assert.ok(nginxSpa.includes('course.muntyandev.ru'), 'Nginx SPA conf must set server_name course.muntyandev.ru')
+  assert.ok(nginxSpa.includes('try_files $uri $uri/ /index.html;'), 'Nginx SPA conf must include SPA fallback')
+
+  const nginxApi = fs.readFileSync(nginxApiPath, 'utf8')
+  assert.ok(nginxApi.includes('api-course.muntyandev.ru'), 'Nginx API conf must set server_name api-course.muntyandev.ru')
+  assert.ok(nginxApi.includes('proxy_pass http://127.0.0.1:3000;'), 'Nginx API conf must reverse proxy to 127.0.0.1:3000')
+
+  const systemd = fs.readFileSync(systemdPath, 'utf8')
+  assert.ok(systemd.includes('ExecStart='), 'Systemd service must define ExecStart')
+  assert.ok(systemd.includes('course-app/backend/dist/index.js'), 'Systemd service must point to compiled backend')
+  assert.ok(systemd.includes('Restart=always'), 'Systemd service must configure Restart=always')
+
+  const backendIndex = fs.readFileSync(backendIndexPath, 'utf8')
+  assert.ok(backendIndex.includes('PORT must be a positive integer'), 'index.ts must validate PORT strictly')
+  assert.ok(backendIndex.includes('0.0.0.0'), 'index.ts must bind to 0.0.0.0 host')
+  assert.ok(backendIndex.includes("app.disable('x-powered-by')"), 'index.ts must disable x-powered-by')
+
+  const frontendEnvProdPath = path.resolve(rootDir, 'frontend/.env.production.example')
+  assert.ok(fs.existsSync(frontendEnvProdPath), 'frontend/.env.production.example must exist')
+  const frontendEnvProd = fs.readFileSync(frontendEnvProdPath, 'utf8')
+  assert.ok(
+    frontendEnvProd.includes('VITE_API_BASE_URL=https://api-course.muntyandev.ru'),
+    'production env must specify api-course.muntyandev.ru without trailing slash',
+  )
+})
+
+
 
 
 

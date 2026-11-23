@@ -10,18 +10,41 @@ import {
 } from './summary.js'
 import { requireUser, createUserClient, verifyEnvAtStartup } from './auth.js'
 
+export function validatePort(rawPort: string | undefined): number {
+  const p = Number(rawPort ?? '3000')
+  if (!Number.isInteger(p) || p < 1) {
+    throw new Error('PORT must be a positive integer')
+  }
+  return p
+}
+
+export function parseAllowedOrigins(rawOrigins: string | undefined): string[] {
+  const origins = (rawOrigins ?? 'http://localhost:5173')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/+$/, ''))
+    .filter(Boolean)
+  return origins.length > 0 ? origins : ['http://localhost:5173']
+}
+
+const rawPort = process.env.PORT ?? '3000'
+const port = Number(rawPort)
+if (!Number.isInteger(port) || port < 1) {
+  throw new Error('PORT must be a positive integer')
+}
+const host = process.env.HOST ?? '0.0.0.0'
+
+const allowedOrigins = parseAllowedOrigins(process.env.FRONTEND_ORIGIN)
+const frontendOrigin =
+  allowedOrigins.length === 1 ? allowedOrigins[0] : allowedOrigins
+
 const app = express()
-const port = Number(process.env.PORT ?? 3000)
-const frontendOrigin = (process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173').replace(
-  /\/+$/,
-  '',
-)
+app.disable('x-powered-by')
 
 app.use(
   cors({
     origin: frontendOrigin,
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Authorization', 'Content-Type'],
   }),
 )
 
@@ -174,7 +197,7 @@ app.use(
 )
 
 export { app }
-export { port, frontendOrigin }
+export { port, host, frontendOrigin }
 
 const isMain =
   process.argv[1] &&
@@ -182,5 +205,7 @@ const isMain =
 
 if (isMain && process.env.NODE_ENV !== 'test') {
   verifyEnvAtStartup()
-  app.listen(port, () => console.log(`API: http://localhost:${port}`))
+  app.listen(port, host, () => {
+    console.log(`API is listening on ${host}:${port}`)
+  })
 }

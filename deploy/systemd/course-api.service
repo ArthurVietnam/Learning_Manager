@@ -1,0 +1,27 @@
+[Unit]
+Description=Course App Node.js Express API Service
+Documentation=https://github.com/gerag/course-app
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/course-app/backend
+Environment=NODE_ENV=production
+EnvironmentFile=/var/www/course-app/backend/.env
+ExecStart=/usr/bin/node /var/www/course-app/backend/dist/index.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=course-api
+
+# Security sandboxing options
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

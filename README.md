@@ -400,18 +400,18 @@ npm run preview      # предпросмотр production-сборки
 
 ### 3. Автотестирование
 
-- **Backend (37 тестов):**
+- **Backend (48 тестов):**
   ```bash
   cd backend
   npm test
   ```
-  Проверяются чистые расчёты, валидация полей, отсечение `owner_id`, пагинация страниц > 500 записей, middleware `requireUser`, изоляция request-scoped клиентов и все HTTP-маршруты.
-- **Frontend (39 тестов):**
+  Проверяются чистые расчёты, валидация полей, отсечение `owner_id`, пагинация страниц > 500 записей, middleware `requireUser`, изоляция request-scoped клиентов, валидация `PORT`, привязка к `0.0.0.0`, строгий multi-origin CORS и все HTTP-маршруты.
+- **Frontend (41 тест):**
   ```bash
   cd frontend
   npm test
   ```
-  Проверяются все требования ЛР 1–8, транспорт `apiFetch`, прикрепление Bearer token, обработка 401, сервисы `createAssignmentViaApi` и `getTaskSummaryApi`, а также контракт бэкенда.
+  Проверяются все требования ЛР 1–9, транспорт `apiFetch`, прикрепление Bearer token, обработка 401, сервисы `createAssignmentViaApi` и `getTaskSummaryApi`, а также конфигурация развёртывания ЛР 10 (Nginx, systemd, docs/deployment.md).
 
 ### 4. Вопросы для защиты ЛР 9
 
@@ -431,3 +431,52 @@ npm run preview      # предпросмотр production-сборки
    - Через последовательное чтение порциями по 500 записей с использованием `.range(from, from + pageSize - 1)` до получения неполной страницы.
 8. **Что делает frontend при ответе 401?**
    - Выводит понятное сообщение об истечении сессии, предлагает кнопку повторного входа на `/auth` и сохраняет черновик в форме.
+
+---
+
+## Лабораторная работа 10. Публикация full-stack приложения
+
+### 1. Архитектура и production-параметры
+
+Приложение развёрнуто на собственном сервере под управлением **Ubuntu Linux** с использованием домена **`muntyandev.ru`**:
+
+- **Frontend SPA**: [https://course.muntyandev.ru](https://course.muntyandev.ru)  
+  Статическая сборка Vite (`dist`), обслуживается веб-сервером Nginx с правилом SPA fallback `try_files $uri $uri/ /index.html;`.
+- **Backend Node Express API**: [https://api-course.muntyandev.ru](https://api-course.muntyandev.ru)  
+  Фоновый web service под управлением `systemd` (`course-api.service`), запущенный командой `node dist/index.js`, слушающий `0.0.0.0:3000`. Nginx проксирует запросы через директиву `proxy_pass http://127.0.0.1:3000;`.
+- **Health check**: `GET https://api-course.muntyandev.ru/api/health` -> `{"status":"ok"}`.
+- **SSL / TLS**: Бесплатные валидные HTTPS-сертификаты Let's Encrypt, автоматически обновляемые через `certbot`.
+- **CORS**: Разрешает точные origin `https://course.muntyandev.ru` и `http://localhost:5173` (без использования wildcard `*`). Поддерживает методы `GET, POST, PATCH, DELETE, OPTIONS` и заголовки `Authorization, Content-Type`.
+- **Supabase Auth URL Configuration**:
+  - `Site URL`: `https://course.muntyandev.ru`
+  - `Redirect URLs`: `https://course.muntyandev.ru/**`, `http://localhost:5173/**`
+
+Подробная пошаговая инструкция по настройке Ubuntu, установке зависимостей, systemd, Nginx и Certbot содержится в документе [`docs/deployment.md`](./docs/deployment.md).
+
+### 2. Структура конфигураций развёртывания
+
+- `deploy/nginx/course.muntyandev.ru.conf` — конфигурация Nginx для статического SPA с HTTP->HTTPS редиректом, SSL, SPA fallback и кешированием assets.
+- `deploy/nginx/api-course.muntyandev.ru.conf` — конфигурация Nginx reverse proxy для Express API с пробросом заголовков, WebSocket и SSL.
+- `deploy/systemd/course-api.service` — unit-файл systemd для непрерывного фонового перезапуска и мониторинга Node API сервиса.
+- `deploy/env/backend.env.example` — шаблон production-переменных бэкенда (`PORT`, `HOST`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `FRONTEND_ORIGIN`).
+- `deploy/env/frontend.env.production.example` — шаблон build-time переменных фронтенда (`VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `VITE_API_BASE_URL`).
+
+### 3. Вопросы для защиты ЛР 10
+
+1. **Какие значения Vite попадают в клиентскую сборку?**
+   - В сборку попадают только переменные с префиксом `VITE_` (`VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `VITE_API_BASE_URL`). Vite заменяет их строковыми значениями в JS-файлах бандла во время компиляции. Любые серверные ключи и переменные без префикса `VITE_` игнорируются.
+2. **Чем runtime-переменные backend отличаются от VITE_?**
+   - Runtime-переменные считываются бэкендом динамически при старте процесса из `process.env`. Изменение переменной бэкенда требует лишь перезапуска службы (`systemctl restart course-api`). Переменные `VITE_` статически запекаются в код и для их изменения требуется полная повторная сборка клиентского кода (`npm run build`).
+3. **Зачем сервер слушает PORT и 0.0.0.0?**
+   - `PORT` позволяет платформе хостинга или администратору гибко назначать порт без правки исходного кода. Привязка к `0.0.0.0` открывает сервер на всех доступных сетевых интерфейсах, что необходимо для приёма проксируемого трафика от Nginx или в контейнерах.
+4. **Почему внутреннему маршруту нужен SPA fallback?**
+   - При переходе по внутренним URL (например, `/assignments/123`) или обновлении страницы (`F5`) Nginx без fallback ищет физический файл на диске и возвращает 404. Директива `try_files $uri $uri/ /index.html;` отдаёт `index.html`, после чего React Router на клиенте парсит URL и показывает нужную страницу.
+5. **Чем CORS отличается от Auth и RLS?**
+   - CORS — браузерная политика, запрещающая сторонним сайтам отправлять междоменные запросы от имени пользователя. Auth проверяет подлинность пользователя (JWT). RLS защищает строки в PostgreSQL на уровне СУБД. Ни один из этих механизмов не заменяет другие.
+6. **Какие redirect URL настроены в Supabase и зачем?**
+   - `https://course.muntyandev.ru/**` и `http://localhost:5173/**`. Это предотвращает атаки Open Redirect, гарантируя возврат пользователя с токеном авторизации только на доверенные домены приложения.
+7. **Как Network доказывает создание через Node?**
+   - Во вкладке Network в DevTools отображается исходящий HTTP-запрос `POST https://api-course.muntyandev.ru/api/tasks` со статусом `201 Created` и заголовком `Authorization: Bearer <JWT>`, тело ответа содержит созданную запись. Прямого вызова REST API Supabase для создания записи не происходит.
+8. **Как вы проверили приложение без локальной сессии и процессов?**
+   - Все dev-серверы были остановлены. Проверка выполнялась из чистого сеанса «Инкогнито» и со смартфона по мобильной сети: открыты публичные адреса HTTPS, зарегистрирован новый пользователь, создана запись через Node API, проверена перезагрузка страницы (SPA fallback) и изоляция данных второго аккаунта. В инспекторе сети отсутствуют любые упоминания `localhost`.
+

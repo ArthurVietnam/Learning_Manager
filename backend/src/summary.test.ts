@@ -23,7 +23,7 @@ import {
 } from './auth.js'
 
 process.env.NODE_ENV = 'test'
-const { app } = await import('./index.js')
+const { app, validatePort, parseAllowedOrigins, host } = await import('./index.js')
 
 describe('Pure calculation: calculateTaskSummary', () => {
   test('empty task list', () => {
@@ -534,9 +534,10 @@ describe('HTTP endpoints integration: Lab 9 routes & security', () => {
     })
   })
 
-  test('GET /api/health returns 200 { status: "ok" }', async () => {
+  test('GET /api/health returns 200 { status: "ok" } and does not leak headers', async () => {
     const res = await fetch(`${baseUrl}/api/health`)
     assert.equal(res.status, 200)
+    assert.equal(res.headers.get('x-powered-by'), null)
     const json = (await res.json()) as { status: string }
     assert.deepEqual(json, { status: 'ok' })
   })
@@ -896,6 +897,9 @@ describe('HTTP endpoints integration: Lab 9 routes & security', () => {
     const allowedHeaders = optRes.headers.get('access-control-allow-headers') || ''
     assert.ok(allowedHeaders.includes('Authorization'))
     assert.ok(allowedHeaders.includes('Content-Type'))
+    const allowedMethods = optRes.headers.get('access-control-allow-methods') || ''
+    assert.ok(allowedMethods.includes('PATCH'), 'CORS allows PATCH')
+    assert.ok(allowedMethods.includes('DELETE'), 'CORS allows DELETE')
   })
 
   test('verifyEnvAtStartup validates required environment variables and forbids service_role', () => {
@@ -1120,6 +1124,109 @@ describe('HTTP endpoints integration: Lab 9 routes & security', () => {
     } finally {
       setAuthClientForTest(null)
       setUserClientFactoryForTest(null)
+    }
+  })
+})
+
+describe('Lab 10: Hosting readiness, PORT validation, and CORS multi-origin', () => {
+  test('validatePort accepts valid integer ports and rejects invalid values', () => {
+    assert.equal(validatePort('3000'), 3000)
+    assert.equal(validatePort('8080'), 8080)
+    assert.equal(validatePort(undefined), 3000)
+
+    assert.throws(() => validatePort('0'), /PORT must be a positive integer/)
+    assert.throws(() => validatePort('-1'), /PORT must be a positive integer/)
+    assert.throws(() => validatePort('not-a-number'), /PORT must be a positive integer/)
+    assert.throws(() => validatePort('3000.5'), /PORT must be a positive integer/)
+  })
+
+  test('parseAllowedOrigins handles single origin, comma-separated origins, and trimming', () => {
+    assert.deepEqual(parseAllowedOrigins('http://localhost:5173'), ['http://localhost:5173'])
+    assert.deepEqual(
+      parseAllowedOrigins('https://course.muntyandev.ru, http://localhost:5173/'),
+      ['https://course.muntyandev.ru', 'http://localhost:5173'],
+    )
+    assert.deepEqual(parseAllowedOrigins(''), ['http://localhost:5173'])
+    assert.deepEqual(parseAllowedOrigins(undefined), ['http://localhost:5173'])
+  })
+
+  test('default host binds to 0.0.0.0', () => {
+    assert.equal(host, '0.0.0.0')
+  })
+
+  test('multi-origin CORS allows production domain, local dev domain, and rejects unauthorized origins', async () => {
+    const testOrigins = parseAllowedOrigins('https://course.muntyandev.ru, http://localhost:5173')
+    const testApp = (await import('express')).default()
+    testApp.disable('x-powered-by')
+    const corsMiddleware = (await import('cors')).default
+    testApp.use(
+      corsMiddleware({
+        origin: testOrigins,
+        methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Authorization', 'Content-Type'],
+      }),
+    )
+    testApp.get('/api/health', (_req, res) => res.status(200).json({ status: 'ok' }))
+
+    const testServer = await new Promise<Server>((resolve) => {
+      const s = testApp.listen(0, '127.0.0.1', () => resolve(s))
+    })
+    try {
+      const port = (testServer.address() as AddressInfo).port
+      const url = `http://127.0.0.1:${port}/api/health`
+
+      // 1. Production frontend domain
+      const resProd = await fetch(url, {
+        headers: { Origin: 'https://course.muntyandev.ru' },
+      })
+      assert.equal(resProd.status, 200)
+      assert.equal(
+        resProd.headers.get('access-control-allow-origin'),
+        'https://course.muntyandev.ru',
+      )
+      assert.equal(resProd.headers.get('x-powered-by'), null)
+
+      // 2. Local dev domain
+      const resDev = await fetch(url, {
+        headers: { Origin: 'http://localhost:5173' },
+      })
+      assert.equal(resDev.status, 200)
+      assert.equal(
+        resDev.headers.get('access-control-allow-origin'),
+        'http://localhost:5173',
+      )
+
+      // 3. Unauthorized origin
+      const resEvil = await fetch(url, {
+        headers: { Origin: 'https://evil-unauthorized-site.com' },
+      })
+      assert.equal(resEvil.status, 200)
+      assert.equal(resEvil.headers.get('access-control-allow-origin'), null)
+
+      // 4. Preflight OPTIONS request
+      const preflight = await fetch(url, {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://course.muntyandev.ru',
+          'Access-Control-Request-Method': 'PATCH',
+          'Access-Control-Request-Headers': 'Authorization, Content-Type',
+        },
+      })
+      assert.equal(preflight.status, 204)
+      assert.equal(
+        preflight.headers.get('access-control-allow-origin'),
+        'https://course.muntyandev.ru',
+      )
+      const allowedMethods = preflight.headers.get('access-control-allow-methods') ?? ''
+      assert.ok(allowedMethods.includes('PATCH'), 'Allows PATCH')
+      assert.ok(allowedMethods.includes('DELETE'), 'Allows DELETE')
+      const allowedHeaders = preflight.headers.get('access-control-allow-headers') ?? ''
+      assert.ok(allowedHeaders.includes('Authorization'), 'Allows Authorization')
+      assert.ok(allowedHeaders.includes('Content-Type'), 'Allows Content-Type')
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        testServer.close((err) => (err ? reject(err) : resolve()))
+      })
     }
   })
 })
